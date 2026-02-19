@@ -1237,7 +1237,7 @@ export default function App() {
                 {!isCompilingLatex && latexPreviewUrl && (
                   <iframe
                     title="LaTeX PDF Preview"
-                    src={latexPreviewUrl}
+                    src={`${latexPreviewUrl}#toolbar=0&navpanes=0&scrollbar=0`}
                     className="h-full w-full rounded-md border border-border/60 bg-white shadow-sm"
                   />
                 )}
