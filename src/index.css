@@ -1,60 +1,60 @@
-@import url("https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,400;7..72,600&family=Space+Grotesk:wght@400;500;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Newsreader:opsz,wght@6..72,500;6..72,700&display=swap");
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --background: 206 47% 7%;
-  --foreground: 206 28% 96%;
-  --muted: 205 32% 15%;
-  --muted-foreground: 205 14% 70%;
-  --popover: 209 49% 10%;
-  --popover-foreground: 206 28% 96%;
-  --card: 209 49% 10%;
-  --card-foreground: 206 28% 96%;
-  --border: 205 31% 24%;
-  --input: 205 31% 24%;
-  --primary: 30 95% 58%;
-  --primary-foreground: 214 73% 12%;
-  --secondary: 191 70% 44%;
-  --secondary-foreground: 202 62% 11%;
-  --accent: 195 51% 21%;
-  --accent-foreground: 206 28% 96%;
-  --destructive: 2 84% 61%;
-  --destructive-foreground: 206 28% 96%;
-  --ring: 30 95% 58%;
+  --background: 0 0% 4%;
+  --foreground: 0 0% 98%;
+  --muted: 0 0% 10%;
+  --muted-foreground: 0 0% 65%;
+  --popover: 0 0% 6%;
+  --popover-foreground: 0 0% 98%;
+  --card: 0 0% 6%;
+  --card-foreground: 0 0% 96%;
+  --border: 0 0% 16%;
+  --input: 0 0% 16%;
+  --primary: 0 0% 96%;
+  --primary-foreground: 0 0% 8%;
+  --secondary: 0 0% 11%;
+  --secondary-foreground: 0 0% 97%;
+  --accent: 0 0% 11%;
+  --accent-foreground: 0 0% 96%;
+  --destructive: 0 73% 52%;
+  --destructive-foreground: 0 0% 98%;
+  --ring: 0 0% 70%;
   --radius: 0.7rem;
   --app-bg:
-    radial-gradient(circle at 0% 0%, rgba(255, 168, 73, 0.15), transparent 30%),
-    radial-gradient(circle at 100% 20%, rgba(70, 194, 212, 0.12), transparent 38%),
-    linear-gradient(120deg, #04111d, #0a2136 60%, #0b1a2b);
+    radial-gradient(circle at 0% 0%, rgba(255, 255, 255, 0.04), transparent 35%),
+    radial-gradient(circle at 100% 100%, rgba(255, 255, 255, 0.03), transparent 45%),
+    linear-gradient(180deg, #070707, #0a0a0a 60%, #090909);
 }
 
 :root.light {
-  --background: 40 33% 97%;
-  --foreground: 215 33% 14%;
-  --muted: 43 30% 92%;
-  --muted-foreground: 214 17% 38%;
+  --background: 0 0% 99%;
+  --foreground: 0 0% 9%;
+  --muted: 0 0% 95%;
+  --muted-foreground: 0 0% 40%;
   --popover: 0 0% 100%;
-  --popover-foreground: 215 33% 14%;
+  --popover-foreground: 0 0% 9%;
   --card: 0 0% 100%;
-  --card-foreground: 215 33% 14%;
-  --border: 210 24% 85%;
-  --input: 210 24% 85%;
-  --primary: 28 91% 52%;
-  --primary-foreground: 30 20% 98%;
-  --secondary: 193 76% 43%;
-  --secondary-foreground: 205 40% 98%;
-  --accent: 210 44% 94%;
-  --accent-foreground: 215 33% 20%;
-  --destructive: 1 80% 54%;
-  --destructive-foreground: 210 40% 98%;
-  --ring: 193 76% 43%;
+  --card-foreground: 0 0% 9%;
+  --border: 0 0% 88%;
+  --input: 0 0% 88%;
+  --primary: 0 0% 12%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 0 0% 93%;
+  --secondary-foreground: 0 0% 12%;
+  --accent: 0 0% 93%;
+  --accent-foreground: 0 0% 12%;
+  --destructive: 0 72% 45%;
+  --destructive-foreground: 0 0% 98%;
+  --ring: 0 0% 35%;
   --app-bg:
-    radial-gradient(circle at 0% 0%, rgba(255, 182, 90, 0.24), transparent 34%),
-    radial-gradient(circle at 100% 20%, rgba(86, 201, 221, 0.18), transparent 42%),
-    linear-gradient(120deg, #faf5ec, #eef7fb 58%, #f6f2e8);
+    radial-gradient(circle at 0% 0%, rgba(0, 0, 0, 0.03), transparent 40%),
+    radial-gradient(circle at 100% 100%, rgba(0, 0, 0, 0.03), transparent 40%),
+    linear-gradient(180deg, #fbfbfb, #f8f8f8 60%, #f6f6f6);
 }
 
 * {
@@ -66,4 +66,5 @@ body {
   margin: 0;
   min-height: 100vh;
   background-image: var(--app-bg);
+  font-family: "Manrope", "Segoe UI", sans-serif;
 }

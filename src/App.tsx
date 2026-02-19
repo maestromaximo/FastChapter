@@ -752,10 +752,10 @@ export default function App() {
   if (screen === "bookshelf") {
     return (
       <main className="min-h-screen bg-background px-6 py-6 text-foreground">
-        <section className="mx-auto flex w-full max-w-7xl items-center justify-between gap-4">
+        <section className="mx-auto flex w-full max-w-[1700px] items-center justify-between gap-4 rounded-xl border border-border/60 bg-card/70 px-4 py-4">
           <div>
-            <h1 className="font-serif text-4xl">Bookshelf</h1>
-            <p className="text-sm text-muted-foreground">
+            <h1 className="font-serif text-3xl">Bookshelf</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
               Welcome, <span className="font-semibold text-foreground">{activeUser}</span>. Pick a manuscript or create a new one.
             </p>
           </div>
@@ -770,11 +770,19 @@ export default function App() {
           </div>
         </section>
 
-        <section className="mx-auto mt-6 grid w-full max-w-7xl grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        <section className="mx-auto mt-4 flex w-full max-w-[1700px] items-center gap-2 overflow-auto">
+          <Button size="sm" variant="secondary" className="rounded-full">Examples</Button>
+          <Button size="sm" variant="ghost" className="rounded-full text-muted-foreground">Dashboard</Button>
+          <Button size="sm" variant="ghost" className="rounded-full text-muted-foreground">Tasks</Button>
+          <Button size="sm" variant="ghost" className="rounded-full text-muted-foreground">Playground</Button>
+          <Button size="sm" variant="ghost" className="rounded-full text-muted-foreground">Authentication</Button>
+        </section>
+
+        <section className="mx-auto mt-4 grid w-full max-w-[1700px] grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           {books.map((book) => (
             <Card
               key={book.id}
-              className="border-border/70 bg-card/70 transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-lg hover:shadow-primary/20"
+              className="border-border/70 bg-card/65 transition hover:-translate-y-0.5 hover:border-foreground/20"
             >
               <CardHeader>
                 <CardTitle className="line-clamp-2 text-xl">{book.title}</CardTitle>
@@ -797,7 +805,7 @@ export default function App() {
         </section>
 
         {books.length === 0 && (
-          <section className="mx-auto mt-10 w-full max-w-7xl rounded-lg border border-dashed border-border bg-card/40 p-8 text-center">
+          <section className="mx-auto mt-10 w-full max-w-[1700px] rounded-lg border border-dashed border-border bg-card/40 p-8 text-center">
             <p className="font-serif text-2xl">No books yet</p>
             <p className="mt-2 text-sm text-muted-foreground">
               Create your first draft container. Fast Chapter will generate folders and starter chapter files.
@@ -847,7 +855,7 @@ export default function App() {
   if (screen === "profile") {
     return (
       <main className="min-h-screen bg-background px-6 py-6 text-foreground">
-        <section className="mx-auto flex w-full max-w-5xl items-center justify-between gap-4 rounded-xl border border-border bg-card/70 px-4 py-3 shadow-sm">
+        <section className="mx-auto flex w-full max-w-[1300px] items-center justify-between gap-4 rounded-xl border border-border/60 bg-card/70 px-4 py-3 shadow-sm">
           <div>
             <h1 className="font-serif text-3xl">Profile & Settings</h1>
             <p className="text-sm text-muted-foreground">Manage your local author profile and appearance preferences.</p>
@@ -858,8 +866,8 @@ export default function App() {
           </Button>
         </section>
 
-        <section className="mx-auto mt-4 grid w-full max-w-5xl grid-cols-1 gap-4 lg:grid-cols-2">
-          <Card>
+        <section className="mx-auto mt-4 grid w-full max-w-[1300px] grid-cols-1 gap-4 lg:grid-cols-2">
+          <Card className="border-border/70 bg-card/65">
             <CardHeader>
               <CardTitle className="text-base">Author Info</CardTitle>
               <CardDescription>Stored locally in your app data folder.</CardDescription>
@@ -881,7 +889,7 @@ export default function App() {
             </CardContent>
           </Card>
 
-          <Card>
+          <Card className="border-border/70 bg-card/65">
             <CardHeader>
               <CardTitle className="text-base">Appearance</CardTitle>
               <CardDescription>Switch between dark and light mode for the full app.</CardDescription>
@@ -903,7 +911,7 @@ export default function App() {
             </CardContent>
           </Card>
 
-          <Card className="lg:col-span-2">
+          <Card className="border-border/70 bg-card/65 lg:col-span-2">
             <CardHeader>
               <CardTitle className="text-base">OpenAI Transcription</CardTitle>
               <CardDescription>
@@ -978,7 +986,7 @@ export default function App() {
 
   return (
     <main className="min-h-screen bg-background px-4 py-4 text-foreground">
-      <section className="mx-auto flex w-full max-w-[1700px] items-center gap-3 rounded-xl border border-border bg-card/70 px-4 py-3 shadow-sm">
+      <section className="mx-auto flex w-full max-w-[1700px] flex-wrap items-center gap-3 rounded-xl border border-border/70 bg-card/70 px-4 py-3 shadow-sm">
         <Button
           variant="outline"
           onClick={() => {
@@ -1021,7 +1029,7 @@ export default function App() {
       </section>
 
       <section className="mx-auto mt-4 grid w-full max-w-[1700px] grid-cols-1 gap-4 xl:grid-cols-[320px_1fr_350px]">
-        <Card className="h-[calc(100vh-8.5rem)]">
+        <Card className="h-[calc(100vh-12rem)] border-border/70 bg-card/65">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
               <CardTitle className="text-base">Project Navigator</CardTitle>
@@ -1045,7 +1053,7 @@ export default function App() {
           </CardContent>
         </Card>
 
-        <Card className="h-[calc(100vh-8.5rem)]">
+        <Card className="h-[calc(100vh-12rem)] border-border/70 bg-card/65">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
               <CardTitle className="text-base">Writing Bench</CardTitle>
@@ -1090,7 +1098,7 @@ export default function App() {
           </CardContent>
         </Card>
 
-        <Card className="h-[calc(100vh-8.5rem)]">
+        <Card className="h-[calc(100vh-12rem)] border-border/70 bg-card/65">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
               <CardTitle className="text-base">Voice Workflow</CardTitle>

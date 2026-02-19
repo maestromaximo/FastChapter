@@ -63,8 +63,8 @@ const config: Config = {
         "pulse-soft": "pulse-soft 2s ease-in-out infinite"
       },
       fontFamily: {
-        sans: ["'Space Grotesk'", "'Segoe UI'", "sans-serif"],
-        serif: ["'Literata'", "Georgia", "serif"]
+        sans: ["'Manrope'", "'Segoe UI'", "sans-serif"],
+        serif: ["'Newsreader'", "Georgia", "serif"]
       }
     }
   },
