@@ -1,6 +1,7 @@
 import type {
   BookSummary,
   FileNode,
+  LatexCompileResult,
   RecordingBundle,
   SaveRecordingResult,
   UserProfile,
@@ -37,6 +38,11 @@ declare global {
         relativePath: string;
         content: string;
       }) => Promise<{ ok: true }>;
+      compileLatex: (payload: {
+        username: string;
+        bookId: string;
+        entryRelativePath?: string;
+      }) => Promise<LatexCompileResult>;
       saveRecording: (payload: {
         username: string;
         bookId: string;

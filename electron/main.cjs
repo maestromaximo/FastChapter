@@ -1,5 +1,7 @@
 const path = require("node:path");
 const fs = require("node:fs/promises");
+const crypto = require("node:crypto");
+const { spawn } = require("node:child_process");
 const { app, BrowserWindow, ipcMain } = require("electron");
 const { v4: uuidv4 } = require("uuid");
 
@@ -7,8 +9,33 @@ const USERS_DIR = "users";
 const BOOKS_DIR = "books";
 const OPENAI_TRANSCRIPTION_MODEL = "gpt-4o-transcribe";
 const OPENAI_TRANSCRIPTION_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024;
+const LATEX_BUILD_DIR = ".fastchapter-build";
+const LATEX_COMPILE_TIMEOUT_MS = 10 * 60 * 1000;
+const LATEX_LOG_TAIL_LIMIT = 12000;
+const LATEX_RELEVANT_EXTENSIONS = new Set([
+  ".tex",
+  ".sty",
+  ".cls",
+  ".bib",
+  ".bst",
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".pdf",
+  ".svg",
+  ".eps"
+]);
+const LATEX_IGNORED_DIRS = new Set([
+  LATEX_BUILD_DIR,
+  "recordings",
+  "transcriptions",
+  ".git",
+  "node_modules"
+]);
 
 const transcriptionJobs = new Map();
+const latexCompileCache = new Map();
+let latexCompilerPromise = null;
 
 function normalizeUserName(value) {
   const cleaned = String(value || "")
@@ -126,6 +153,36 @@ async function refreshMainTeX(bookRoot) {
   const chapters = await listChapterDescriptors(bookRoot);
   const mainPath = path.join(bookRoot, "main.tex");
   await fs.writeFile(mainPath, buildMainTeX(chapters), "utf8");
+}
+
+async function ensureLatexScaffold(bookRoot) {
+  await ensureDir(path.join(bookRoot, "chapters"));
+
+  const coverPath = path.join(bookRoot, "cover-page.tex");
+  if (!(await fileExists(coverPath))) {
+    await fs.writeFile(
+      coverPath,
+      "\\begin{titlepage}\n  \\centering\n  {\\Huge Fast Chapter Draft\\par}\n\\end{titlepage}\n",
+      "utf8"
+    );
+  }
+
+  const backPath = path.join(bookRoot, "back-page.tex");
+  if (!(await fileExists(backPath))) {
+    await fs.writeFile(backPath, "% Back page placeholder\n", "utf8");
+  }
+
+  const mainPath = path.join(bookRoot, "main.tex");
+  if (!(await fileExists(mainPath))) {
+    await refreshMainTeX(bookRoot);
+  }
+}
+
+async function assertBookExists(bookRoot, bookId) {
+  const metaPath = path.join(bookRoot, "book.json");
+  if (!(await fileExists(metaPath))) {
+    throw new Error(`Book not found: ${bookId}`);
+  }
 }
 
 async function ensureDir(dirPath) {
@@ -260,6 +317,305 @@ async function parseOpenAIError(response) {
   return raw || `HTTP ${response.status}`;
 }
 
+function normalizeRelativePath(value) {
+  return String(value || "")
+    .trim()
+    .replaceAll("\\", "/")
+    .replace(/^\/+/, "");
+}
+
+function trimLogTail(output) {
+  const text = String(output || "").trim();
+  if (text.length <= LATEX_LOG_TAIL_LIMIT) return text;
+  return text.slice(-LATEX_LOG_TAIL_LIMIT);
+}
+
+async function fileExists(filePath) {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function runCommand(command, args, cwd, timeoutMs = LATEX_COMPILE_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let isFinished = false;
+    const startedAt = Date.now();
+
+    const timer = setTimeout(() => {
+      if (isFinished) return;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!isFinished) child.kill("SIGKILL");
+      }, 1200);
+    }, timeoutMs);
+
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+
+    child.on("error", (error) => {
+      if (isFinished) return;
+      isFinished = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+
+    child.on("close", (code, signal) => {
+      if (isFinished) return;
+      isFinished = true;
+      clearTimeout(timer);
+      resolve({
+        code: Number(code ?? -1),
+        signal: signal || null,
+        stdout,
+        stderr,
+        durationMs: Date.now() - startedAt
+      });
+    });
+  });
+}
+
+async function detectLatexCompiler() {
+  if (latexCompilerPromise) {
+    return latexCompilerPromise;
+  }
+
+  latexCompilerPromise = (async () => {
+    const attempts = [
+      { type: "latexmk", command: "latexmk", args: ["--version"] },
+      { type: "pdflatex", command: "pdflatex", args: ["--version"] }
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        const check = await runCommand(attempt.command, attempt.args, process.cwd(), 12000);
+        if (check.code === 0) {
+          return { type: attempt.type, command: attempt.command };
+        }
+      } catch {
+        // Ignore and try next compiler option.
+      }
+    }
+
+    throw new Error(
+      "No LaTeX compiler found. Install TeX with latexmk (recommended) or pdflatex and ensure it is on PATH."
+    );
+  })();
+
+  try {
+    return await latexCompilerPromise;
+  } catch (error) {
+    latexCompilerPromise = null;
+    throw error;
+  }
+}
+
+async function collectLatexFingerprintFiles(bookRoot) {
+  const stack = [bookRoot];
+  const descriptors = [];
+
+  while (stack.length > 0) {
+    const currentDir = stack.pop();
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const absolutePath = path.join(currentDir, entry.name);
+      const relativePath = path.relative(bookRoot, absolutePath).replaceAll(path.sep, "/");
+
+      if (entry.isDirectory()) {
+        if (LATEX_IGNORED_DIRS.has(entry.name)) continue;
+        stack.push(absolutePath);
+        continue;
+      }
+
+      if (!entry.isFile()) continue;
+
+      const ext = path.extname(entry.name).toLowerCase();
+      if (!LATEX_RELEVANT_EXTENSIONS.has(ext)) continue;
+
+      const stats = await fs.stat(absolutePath);
+      descriptors.push(`${relativePath}|${stats.size}|${Math.round(stats.mtimeMs)}`);
+    }
+  }
+
+  descriptors.sort((a, b) => a.localeCompare(b));
+  return descriptors;
+}
+
+async function computeLatexFingerprint(bookRoot, entryRelativePath) {
+  const descriptors = await collectLatexFingerprintFiles(bookRoot);
+  const hash = crypto.createHash("sha1");
+  hash.update(`entry:${entryRelativePath}\n`);
+  descriptors.forEach((value) => hash.update(`${value}\n`));
+  return hash.digest("hex");
+}
+
+async function loadPdfDataUrl(filePath) {
+  const pdfBuffer = await fs.readFile(filePath);
+  return `data:application/pdf;base64,${pdfBuffer.toString("base64")}`;
+}
+
+async function runLatexCompile({ compiler, bookRoot, entryRelativePath, buildRoot }) {
+  if (compiler.type === "latexmk") {
+    const args = [
+      "-pdf",
+      "-interaction=nonstopmode",
+      "-file-line-error",
+      "-halt-on-error",
+      `-outdir=${buildRoot}`,
+      entryRelativePath
+    ];
+    const result = await runCommand(compiler.command, args, bookRoot);
+    const combinedLog = `${result.stdout}\n${result.stderr}`;
+
+    if (result.code !== 0) {
+      throw new Error(
+        `LaTeX compile failed (${compiler.type}, code ${result.code}).\n${trimLogTail(combinedLog)}`
+      );
+    }
+
+    return {
+      durationMs: result.durationMs,
+      logTail: trimLogTail(combinedLog)
+    };
+  }
+
+  const args = [
+    "-interaction=nonstopmode",
+    "-file-line-error",
+    "-halt-on-error",
+    `-output-directory=${buildRoot}`,
+    entryRelativePath
+  ];
+
+  const first = await runCommand(compiler.command, args, bookRoot);
+  const second = first.code === 0 ? await runCommand(compiler.command, args, bookRoot) : null;
+  const combinedLog = [first.stdout, first.stderr, second?.stdout || "", second?.stderr || ""].join("\n");
+  const finalCode = second ? second.code : first.code;
+
+  if (finalCode !== 0) {
+    throw new Error(
+      `LaTeX compile failed (${compiler.type}, code ${finalCode}).\n${trimLogTail(combinedLog)}`
+    );
+  }
+
+  return {
+    durationMs: first.durationMs + (second?.durationMs || 0),
+    logTail: trimLogTail(combinedLog)
+  };
+}
+
+async function compileLatex(payload) {
+  const username = normalizeUserName(payload.username);
+  const { bookId } = payload;
+  const entryRelativePath = normalizeRelativePath(payload.entryRelativePath || "main.tex") || "main.tex";
+
+  if (!entryRelativePath.toLowerCase().endsWith(".tex")) {
+    throw new Error("LaTeX compile entry must be a .tex file.");
+  }
+
+  const bookRoot = getBookRoot(username, bookId);
+  await assertBookExists(bookRoot, bookId);
+  await ensureLatexScaffold(bookRoot);
+  const entryAbsolutePath = resolveInside(bookRoot, entryRelativePath);
+
+  if (!(await fileExists(entryAbsolutePath))) {
+    throw new Error(`LaTeX entry file not found: ${entryRelativePath}`);
+  }
+
+  const outputBaseName = path.basename(entryRelativePath, ".tex");
+  const buildRoot = path.join(bookRoot, LATEX_BUILD_DIR);
+  const pdfAbsolutePath = path.join(buildRoot, `${outputBaseName}.pdf`);
+  const outputRelativePath = path.relative(bookRoot, pdfAbsolutePath).replaceAll(path.sep, "/");
+  await ensureDir(buildRoot);
+
+  const cacheKey = `${username}:${bookId}:${entryRelativePath}`;
+  const fingerprint = await computeLatexFingerprint(bookRoot, entryRelativePath);
+  const cached = latexCompileCache.get(cacheKey);
+
+  if (cached?.runningPromise) {
+    return cached.runningPromise;
+  }
+
+  if (cached && cached.fingerprint === fingerprint && (await fileExists(pdfAbsolutePath))) {
+    return {
+      ok: true,
+      cached: true,
+      compiler: cached.compiler,
+      entryRelativePath,
+      outputRelativePath,
+      durationMs: 0,
+      generatedAt: new Date().toISOString(),
+      logTail: cached.logTail || "",
+      pdfDataUrl: await loadPdfDataUrl(pdfAbsolutePath)
+    };
+  }
+
+  const compilePromise = (async () => {
+    const compiler = await detectLatexCompiler();
+    const execution = await runLatexCompile({
+      compiler,
+      bookRoot,
+      entryRelativePath,
+      buildRoot
+    });
+
+    if (!(await fileExists(pdfAbsolutePath))) {
+      throw new Error(`Compilation finished but PDF was not produced: ${outputRelativePath}`);
+    }
+
+    const generatedAt = new Date().toISOString();
+    latexCompileCache.set(cacheKey, {
+      fingerprint,
+      compiler: compiler.type,
+      logTail: execution.logTail,
+      generatedAt
+    });
+
+    return {
+      ok: true,
+      cached: false,
+      compiler: compiler.type,
+      entryRelativePath,
+      outputRelativePath,
+      durationMs: execution.durationMs,
+      generatedAt,
+      logTail: execution.logTail,
+      pdfDataUrl: await loadPdfDataUrl(pdfAbsolutePath)
+    };
+  })();
+
+  latexCompileCache.set(cacheKey, {
+    ...(cached || {}),
+    runningPromise: compilePromise
+  });
+
+  try {
+    return await compilePromise;
+  } finally {
+    const current = latexCompileCache.get(cacheKey);
+    if (current?.runningPromise) {
+      delete current.runningPromise;
+      latexCompileCache.set(cacheKey, current);
+    }
+  }
+}
+
 async function testOpenAIApiKey(payload) {
   const username = normalizeUserName(payload.username);
   const profile = await readUserProfilePrivate(username);
@@ -358,14 +714,7 @@ async function createBook(username, titleRaw) {
   await ensureDir(path.join(bookRoot, "chapters"));
   await ensureDir(path.join(bookRoot, "transcriptions"));
   await ensureDir(path.join(bookRoot, "recordings"));
-
-  await fs.writeFile(
-    path.join(bookRoot, "cover-page.tex"),
-    "\\begin{titlepage}\n  \\centering\n  {\\Huge Fast Chapter Draft\\par}\n\\end{titlepage}\n",
-    "utf8"
-  );
-
-  await fs.writeFile(path.join(bookRoot, "back-page.tex"), "% Back page placeholder\n", "utf8");
+  await ensureLatexScaffold(bookRoot);
 
   const metadata = {
     id,
@@ -400,7 +749,12 @@ async function readTree(currentDir, rootDir) {
 
   const children = await Promise.all(
     items
-      .filter((item) => item.name !== "book.json" && !item.name.endsWith(".meta.json"))
+      .filter(
+        (item) =>
+          item.name !== "book.json" &&
+          !item.name.endsWith(".meta.json") &&
+          !item.name.startsWith(".")
+      )
       .map(async (item) => {
         const absolutePath = path.join(currentDir, item.name);
         const relativePath = path.relative(rootDir, absolutePath).replaceAll(path.sep, "/");
@@ -433,6 +787,8 @@ async function readTree(currentDir, rootDir) {
 
 async function getBookTree(username, bookId) {
   const root = getBookRoot(username, bookId);
+  await assertBookExists(root, bookId);
+  await ensureLatexScaffold(root);
   return readTree(root, root);
 }
 
@@ -915,6 +1271,14 @@ function registerIpcHandlers() {
   ipcMain.handle("book:listRecordings", async (_event, payload) => {
     const { username, bookId } = payload;
     return listRecordings(normalizeUserName(username), bookId);
+  });
+  ipcMain.handle("book:compileLatex", async (_event, payload) => {
+    const { username, bookId, entryRelativePath } = payload;
+    return compileLatex({
+      username: normalizeUserName(username),
+      bookId,
+      entryRelativePath
+    });
   });
   ipcMain.handle("book:writeMyBook", async (_event, payload) => {
     const { username, bookId } = payload;

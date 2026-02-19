@@ -40,7 +40,7 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import type { BookSummary, FileNode, RecordingBundle, UserProfile } from "@/types/domain";
+import type { BookSummary, FileNode, LatexCompileResult, RecordingBundle, UserProfile } from "@/types/domain";
 
 type AppScreen = "auth" | "bookshelf" | "workspace" | "profile";
 
@@ -79,6 +79,12 @@ function formatBytes(value: number) {
   if (kb < 1024) return `${kb.toFixed(1)} KB`;
   const mb = kb / 1024;
   return `${mb.toFixed(2)} MB`;
+}
+
+function formatDurationMs(value: number) {
+  if (!value) return "0 ms";
+  if (value < 1000) return `${value} ms`;
+  return `${(value / 1000).toFixed(1)} s`;
 }
 
 function getFirstEditablePath(nodes: FileNode[]): string | null {
@@ -183,6 +189,12 @@ export default function App() {
   const [editorContent, setEditorContent] = useState("");
   const [lastSavedContent, setLastSavedContent] = useState("");
   const [isBusy, setIsBusy] = useState(false);
+  const [isCompilingLatex, setIsCompilingLatex] = useState(false);
+  const [autoCompileOnSave, setAutoCompileOnSave] = useState(true);
+  const [latexPreviewUrl, setLatexPreviewUrl] = useState<string | null>(null);
+  const [lastLatexCompile, setLastLatexCompile] = useState<LatexCompileResult | null>(null);
+  const [latexCompileError, setLatexCompileError] = useState<string | null>(null);
+  const [isVoicePaneOpen, setIsVoicePaneOpen] = useState(true);
 
   const [recordingData, setRecordingData] = useState<RecordingBundle>({
     recordings: [],
@@ -268,16 +280,51 @@ export default function App() {
 
   useEffect(() => {
     if (!activeUser || !selectedBook) return;
+    let cancelled = false;
 
     setIsBusy(true);
+    setLatexPreviewUrl(null);
+    setLastLatexCompile(null);
+    setLatexCompileError(null);
+
     refreshWorkspaceData(activeUser, selectedBook.id, false)
-      .then(async () => {
+      .then(() => {
         setBookTitleDraft(selectedBook.title);
+
+        setIsCompilingLatex(true);
+        window.fastChapter
+          .compileLatex({
+            username: activeUser,
+            bookId: selectedBook.id,
+            entryRelativePath: "main.tex"
+          })
+          .then((compileResult) => {
+            if (cancelled) return;
+            setLastLatexCompile(compileResult);
+            setLatexPreviewUrl(compileResult.pdfDataUrl);
+            setLatexCompileError(null);
+          })
+          .catch((error: unknown) => {
+            if (cancelled) return;
+            const message = String(error);
+            setLatexCompileError(message);
+            setNotice({ tone: "error", text: message.split("\n")[0] || message });
+          })
+          .finally(() => {
+            if (!cancelled) setIsCompilingLatex(false);
+          });
       })
       .catch((error: unknown) => {
+        if (cancelled) return;
         setNotice({ tone: "error", text: String(error) });
       })
-      .finally(() => setIsBusy(false));
+      .finally(() => {
+        if (!cancelled) setIsBusy(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeUser, selectedBook]);
 
   useEffect(() => {
@@ -366,6 +413,22 @@ export default function App() {
     return () => window.removeEventListener("mousedown", handleDocumentClick);
   }, [isProfileMenuOpen]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const withModifier = event.ctrlKey || event.metaKey;
+
+      if (!withModifier || key !== "l") return;
+      if (screen !== "workspace") return;
+
+      event.preventDefault();
+      setIsVoicePaneOpen((current) => !current);
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [screen]);
+
   const handleLocalAccount = async () => {
     const username = usernameInput.trim();
     if (!username) {
@@ -438,6 +501,37 @@ export default function App() {
     }
   };
 
+  const handleCompileLatex = async (options?: { silentSuccess?: boolean }) => {
+    if (!activeUser || !selectedBook) return;
+
+    try {
+      setIsCompilingLatex(true);
+      const compileResult = await window.fastChapter.compileLatex({
+        username: activeUser,
+        bookId: selectedBook.id,
+        entryRelativePath: "main.tex"
+      });
+      setLastLatexCompile(compileResult);
+      setLatexPreviewUrl(compileResult.pdfDataUrl);
+      setLatexCompileError(null);
+
+      if (!options?.silentSuccess) {
+        setNotice({
+          tone: "success",
+          text: compileResult.cached
+            ? "LaTeX preview is up to date."
+            : `Compiled with ${compileResult.compiler} in ${formatDurationMs(compileResult.durationMs)}.`
+        });
+      }
+    } catch (error) {
+      const message = String(error);
+      setLatexCompileError(message);
+      setNotice({ tone: "error", text: message.split("\n")[0] || message });
+    } finally {
+      setIsCompilingLatex(false);
+    }
+  };
+
   const handleSaveFile = async () => {
     if (!activeUser || !selectedBook || !selectedPath) return;
 
@@ -451,6 +545,12 @@ export default function App() {
       setLastSavedContent(editorContent);
       await refreshBooks(activeUser);
       setNotice({ tone: "success", text: `Saved ${selectedPath}` });
+
+      if (autoCompileOnSave && /\.tex$/i.test(selectedPath)) {
+        handleCompileLatex({ silentSuccess: true }).catch(() => {
+          // Errors are surfaced by handleCompileLatex notice handling.
+        });
+      }
     } catch (error) {
       setNotice({ tone: "error", text: String(error) });
     }
@@ -1019,16 +1119,24 @@ export default function App() {
           <WandSparkles className="mr-2 h-4 w-4" />
           Write My Book
         </Button>
+        <Button variant={isVoicePaneOpen ? "outline" : "secondary"} onClick={() => setIsVoicePaneOpen((current) => !current)}>
+          Voice Pane ({isVoicePaneOpen ? "On" : "Off"})
+        </Button>
 
         <div className="ml-auto flex items-center gap-2">
           <Badge variant={hasRecordings ? "success" : "secondary"}>
             {hasRecordings ? "Process seeded" : "Needs first recording"}
           </Badge>
           <Badge variant="outline">{selectedBook?.id.slice(0, 8)}</Badge>
+          <Badge variant="outline">Ctrl+L</Badge>
         </div>
       </section>
 
-      <section className="mx-auto mt-4 grid w-full max-w-[1700px] grid-cols-1 gap-4 xl:grid-cols-[320px_1fr_350px]">
+      <section
+        className={`mx-auto mt-4 grid w-full max-w-[1700px] grid-cols-1 gap-4 ${
+          isVoicePaneOpen ? "xl:grid-cols-[320px_1fr_350px]" : "xl:grid-cols-[320px_1fr]"
+        }`}
+      >
         <Card className="h-[calc(100vh-12rem)] border-border/70 bg-card/65">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
@@ -1057,13 +1165,26 @@ export default function App() {
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
               <CardTitle className="text-base">Writing Bench</CardTitle>
-              <Button variant="secondary" size="sm" onClick={handleSaveFile} disabled={!editorDirty || !selectedPath || isBusy}>
-                <Save className="mr-2 h-3.5 w-3.5" />
-                Save File
-              </Button>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant={autoCompileOnSave ? "outline" : "ghost"}
+                  size="sm"
+                  onClick={() => setAutoCompileOnSave((current) => !current)}
+                >
+                  Auto Compile: {autoCompileOnSave ? "On" : "Off"}
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => handleCompileLatex()} disabled={isCompilingLatex || isBusy}>
+                  {isCompilingLatex ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
+                  Compile
+                </Button>
+                <Button variant="secondary" size="sm" onClick={handleSaveFile} disabled={!editorDirty || !selectedPath || isBusy}>
+                  <Save className="mr-2 h-3.5 w-3.5" />
+                  Save File
+                </Button>
+              </div>
             </div>
             <CardDescription>
-              Left: editable LaTeX/source. Right: live preview placeholder for MyTeX/Overleaf-style rendering.
+              Left: editable LaTeX/source. Right: real compiled PDF preview from `main.tex`.
             </CardDescription>
           </CardHeader>
           <CardContent className="h-[calc(100%-7.4rem)]">
@@ -1080,24 +1201,73 @@ export default function App() {
               </div>
 
               <div className="flex min-h-0 flex-col rounded-lg border border-border/70 bg-muted/20 p-4">
-                <p className="text-xs uppercase tracking-wider text-muted-foreground">Preview</p>
-                <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-md border border-dashed border-border/60 bg-background/70 p-4">
-                  <p className="font-serif text-lg">Live chapter render</p>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    Connect MyTeX + PDF renderer to replace this panel with compiled chapter output.
-                  </p>
-                  <Separator className="my-4" />
-                  <pre className="whitespace-pre-wrap break-words font-mono text-xs text-foreground/80">
-                    {selectedPath && isEditableFile(selectedPath)
-                      ? editorContent || "% Start writing here..."
-                      : "% Select a .tex or .txt file to preview source"}
-                  </pre>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs uppercase tracking-wider text-muted-foreground">Preview</p>
+                  <Badge variant={latexPreviewUrl ? "success" : "secondary"}>
+                    {latexPreviewUrl ? "Compiled PDF ready" : "No compiled PDF"}
+                  </Badge>
+                  {lastLatexCompile && (
+                    <Badge variant="outline">
+                      {lastLatexCompile.compiler}
+                      {lastLatexCompile.cached ? " (cached)" : ""}
+                    </Badge>
+                  )}
                 </div>
+                <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-md border border-dashed border-border/60 bg-background/70 p-4">
+                  {isCompilingLatex && (
+                    <div className="grid h-full place-items-center text-sm text-muted-foreground">
+                      <span className="inline-flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Compiling LaTeX...
+                      </span>
+                    </div>
+                  )}
+
+                  {!isCompilingLatex && latexPreviewUrl && (
+                    <iframe
+                      title="LaTeX PDF Preview"
+                      src={latexPreviewUrl}
+                      className="h-full w-full rounded-md border border-border/60 bg-background"
+                    />
+                  )}
+
+                  {!isCompilingLatex && !latexPreviewUrl && (
+                    <div className="grid h-full place-items-center text-center">
+                      <div>
+                        <p className="font-serif text-lg">No PDF preview yet</p>
+                        <p className="mt-2 text-sm text-muted-foreground">
+                          Click Compile to render `main.tex` with your installed LaTeX toolchain.
+                        </p>
+                        {latexCompileError && (
+                          <p className="mt-2 max-w-xl rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-left text-xs text-rose-200">
+                            {latexCompileError}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {lastLatexCompile && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Last compile: {formatDate(lastLatexCompile.generatedAt)} · {formatDurationMs(lastLatexCompile.durationMs)}
+                  </p>
+                )}
+
+                {lastLatexCompile?.logTail && (
+                  <details className="mt-2 rounded-md border border-border/60 bg-background/60 p-2 text-xs">
+                    <summary className="cursor-pointer text-muted-foreground">Compiler log tail</summary>
+                    <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground/80">
+                      {lastLatexCompile.logTail}
+                    </pre>
+                  </details>
+                )}
               </div>
             </div>
           </CardContent>
         </Card>
 
+        {isVoicePaneOpen && (
         <Card className="h-[calc(100vh-12rem)] border-border/70 bg-card/65">
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between gap-2">
@@ -1208,6 +1378,7 @@ export default function App() {
             </ScrollArea>
           </CardContent>
         </Card>
+        )}
       </section>
 
       <Dialog

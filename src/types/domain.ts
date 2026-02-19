@@ -64,3 +64,15 @@ export type WriteResult = {
   status: string;
   message: string;
 };
+
+export type LatexCompileResult = {
+  ok: true;
+  cached: boolean;
+  compiler: "latexmk" | "pdflatex";
+  entryRelativePath: string;
+  outputRelativePath: string;
+  durationMs: number;
+  generatedAt: string;
+  logTail: string;
+  pdfDataUrl: string;
+};

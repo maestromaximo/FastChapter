@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("fastChapter", {
   createChapter: (payload) => ipcRenderer.invoke("book:createChapter", payload),
   readProjectFile: (payload) => ipcRenderer.invoke("book:readFile", payload),
   writeProjectFile: (payload) => ipcRenderer.invoke("book:writeFile", payload),
+  compileLatex: (payload) => ipcRenderer.invoke("book:compileLatex", payload),
   saveRecording: (payload) => ipcRenderer.invoke("book:saveRecording", payload),
   listRecordings: (payload) => ipcRenderer.invoke("book:listRecordings", payload),
   writeMyBook: (payload) => ipcRenderer.invoke("book:writeMyBook", payload)

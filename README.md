@@ -7,7 +7,8 @@ Fast Chapter is a desktop app concept for voice-first book drafting. This protot
 - Book creation with filesystem scaffolding
 - VS Code-like project navigator wired to the real project directory
 - Chapter-by-chapter folder generation
-- Side-by-side writing bench (source + preview placeholder)
+- Side-by-side writing bench (source + compiled PDF preview)
+- Real LaTeX compilation to PDF preview (`main.tex`)
 - Recording workflow with transcription placeholders
 - Profile settings with local OpenAI API key storage
 - Background OpenAI transcription jobs (`gpt-4o-transcribe`) with status tracking
@@ -77,9 +78,17 @@ npm run start
 
 ## Next Integrations
 
-- MyTeX / LaTeX compilation + rendered PDF pane
 - Codex SDK writing orchestration from transcriptions
 - Book export (PDF + source bundle)
+
+## LaTeX Preview
+
+- Fast Chapter now compiles `main.tex` to a real PDF preview in the workspace.
+- Compiler selection is automatic:
+  1. `latexmk` (preferred, incremental/optimized)
+  2. `pdflatex` fallback
+- If neither command is available on PATH, compile actions fail with an install hint.
+- Compiled artifacts are stored in each book under `.fastchapter-build/` (hidden from navigator).
 
 ## OpenAI Key + Transcription
 
