@@ -1159,7 +1159,7 @@ export default function App() {
           isVoicePaneOpen ? "xl:grid-cols-[260px_1fr_320px]" : "xl:grid-cols-[260px_1fr]"
         }`}
       >
-        <div className="flex h-full flex-col bg-card/30">
+        <div className="flex h-full min-h-0 flex-col bg-card/30">
           <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2.5">
             <h2 className="text-sm font-semibold tracking-tight">Project Navigator</h2>
             <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCreateChapter}>
@@ -1175,7 +1175,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex h-full flex-col bg-background min-w-0">
+        <div className="flex h-full min-h-0 flex-col bg-background min-w-0">
           <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2 bg-card/30">
             <h2 className="text-sm font-semibold tracking-tight">Writing Bench</h2>
             <div className="flex items-center gap-2">
@@ -1279,7 +1279,7 @@ export default function App() {
         </div>
 
         {isVoicePaneOpen && (
-        <div className="flex h-full flex-col bg-card/30">
+        <div className="flex h-full min-h-0 flex-col bg-card/30">
           <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2.5">
             <h2 className="text-sm font-semibold tracking-tight">Voice Workflow</h2>
             <Button
