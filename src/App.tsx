@@ -152,6 +152,7 @@ function renderTree(
 }
 
 const THEME_STORAGE_KEY = "fastchapter-theme";
+const LAST_USER_STORAGE_KEY = "fastchapter-last-user";
 
 export default function App() {
   const [screen, setScreen] = useState<AppScreen>("auth");
@@ -302,10 +303,37 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const lastUser = window.localStorage.getItem(LAST_USER_STORAGE_KEY)?.trim();
+    if (!lastUser || activeUser) return;
+
+    setUsernameInput(lastUser);
+    setIsBusy(true);
+
+    window.fastChapter
+      .createUser(lastUser)
+      .then((profile) => {
+        setActiveUser(profile.username);
+        setUserRootPath(profile.rootPath);
+        setUserProfile(null);
+        setOpenAiApiKeyInput("");
+        setApiKeyTestMessage(null);
+      })
+      .catch(() => {
+        window.localStorage.removeItem(LAST_USER_STORAGE_KEY);
+      })
+      .finally(() => setIsBusy(false));
+  }, [activeUser]);
+
+  useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle("light", theme === "light");
     window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
+
+  useEffect(() => {
+    if (!activeUser) return;
+    window.localStorage.setItem(LAST_USER_STORAGE_KEY, activeUser);
+  }, [activeUser]);
 
   useEffect(() => {
     setIsProfileMenuOpen(false);

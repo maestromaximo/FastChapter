@@ -943,6 +943,16 @@ function createWindow() {
   } else {
     win.loadFile(path.join(__dirname, "..", "dist", "index.html"));
   }
+
+  win.webContents.on("before-input-event", (event, input) => {
+    const key = String(input.key || "").toLowerCase();
+    const isReloadShortcut = (input.control || input.meta) && key === "r";
+    const isF5 = key === "f5";
+
+    if (isReloadShortcut || isF5) {
+      event.preventDefault();
+    }
+  });
 }
 
 app.whenReady().then(async () => {
