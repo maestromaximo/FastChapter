@@ -38,6 +38,29 @@ declare global {
         relativePath: string;
         content: string;
       }) => Promise<{ ok: true }>;
+      createProjectFile: (payload: {
+        username: string;
+        bookId: string;
+        parentRelativePath?: string;
+        name: string;
+      }) => Promise<{ ok: true; path: string; type: "file" }>;
+      createProjectDirectory: (payload: {
+        username: string;
+        bookId: string;
+        parentRelativePath?: string;
+        name: string;
+      }) => Promise<{ ok: true; path: string; type: "directory" }>;
+      renameProjectEntry: (payload: {
+        username: string;
+        bookId: string;
+        relativePath: string;
+        nextName: string;
+      }) => Promise<{ ok: true; path: string }>;
+      deleteProjectEntry: (payload: {
+        username: string;
+        bookId: string;
+        relativePath: string;
+      }) => Promise<{ ok: true }>;
       compileLatex: (payload: {
         username: string;
         bookId: string;

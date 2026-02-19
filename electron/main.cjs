@@ -822,6 +822,122 @@ async function writeProjectFile(username, bookId, relativePath, content) {
   return { ok: true };
 }
 
+function toProjectRelativePath(bookRoot, absolutePath) {
+  return path.relative(bookRoot, absolutePath).replaceAll(path.sep, "/");
+}
+
+function sanitizeEntryName(nameRaw) {
+  const name = String(nameRaw || "").trim();
+  if (!name) {
+    throw new Error("Name cannot be empty.");
+  }
+  if (name === "." || name === "..") {
+    throw new Error("Invalid name.");
+  }
+  if (name.includes("/") || name.includes("\\")) {
+    throw new Error("Name cannot include path separators.");
+  }
+  return name;
+}
+
+async function createProjectFile(username, bookId, parentRelativePath, nameRaw) {
+  const bookRoot = getBookRoot(username, bookId);
+  const parentRelative = String(parentRelativePath || "").trim();
+  const name = sanitizeEntryName(nameRaw);
+  const parentAbsolutePath = resolveInside(bookRoot, parentRelative || ".");
+  const parentStats = await fs.stat(parentAbsolutePath);
+
+  if (!parentStats.isDirectory()) {
+    throw new Error("Selected parent is not a directory.");
+  }
+
+  const targetRelativePath = parentRelative ? `${parentRelative}/${name}` : name;
+  const targetAbsolutePath = resolveInside(bookRoot, targetRelativePath);
+
+  await fs.writeFile(targetAbsolutePath, "", { encoding: "utf8", flag: "wx" });
+  await refreshMainTeX(bookRoot);
+  await touchBook(username, bookId);
+
+  return {
+    ok: true,
+    path: toProjectRelativePath(bookRoot, targetAbsolutePath),
+    type: "file"
+  };
+}
+
+async function createProjectDirectory(username, bookId, parentRelativePath, nameRaw) {
+  const bookRoot = getBookRoot(username, bookId);
+  const parentRelative = String(parentRelativePath || "").trim();
+  const name = sanitizeEntryName(nameRaw);
+  const parentAbsolutePath = resolveInside(bookRoot, parentRelative || ".");
+  const parentStats = await fs.stat(parentAbsolutePath);
+
+  if (!parentStats.isDirectory()) {
+    throw new Error("Selected parent is not a directory.");
+  }
+
+  const targetRelativePath = parentRelative ? `${parentRelative}/${name}` : name;
+  const targetAbsolutePath = resolveInside(bookRoot, targetRelativePath);
+
+  await fs.mkdir(targetAbsolutePath, { recursive: false });
+  await refreshMainTeX(bookRoot);
+  await touchBook(username, bookId);
+
+  return {
+    ok: true,
+    path: toProjectRelativePath(bookRoot, targetAbsolutePath),
+    type: "directory"
+  };
+}
+
+async function renameProjectEntry(username, bookId, relativePath, nextNameRaw) {
+  const bookRoot = getBookRoot(username, bookId);
+  const sourceAbsolutePath = resolveInside(bookRoot, relativePath);
+  const sourceRelativePath = toProjectRelativePath(bookRoot, sourceAbsolutePath);
+
+  if (!sourceRelativePath) {
+    throw new Error("Project root cannot be renamed.");
+  }
+
+  const nextName = sanitizeEntryName(nextNameRaw);
+  const sourceParentAbsolutePath = path.dirname(sourceAbsolutePath);
+  const sourceParentRelativePath = toProjectRelativePath(bookRoot, sourceParentAbsolutePath);
+  const targetRelativePath = sourceParentRelativePath ? `${sourceParentRelativePath}/${nextName}` : nextName;
+  const targetAbsolutePath = resolveInside(bookRoot, targetRelativePath);
+
+  await fs.rename(sourceAbsolutePath, targetAbsolutePath);
+  await refreshMainTeX(bookRoot);
+  await touchBook(username, bookId);
+
+  return {
+    ok: true,
+    path: toProjectRelativePath(bookRoot, targetAbsolutePath)
+  };
+}
+
+async function deleteProjectEntry(username, bookId, relativePath) {
+  const bookRoot = getBookRoot(username, bookId);
+  const targetAbsolutePath = resolveInside(bookRoot, relativePath);
+  const targetRelativePath = toProjectRelativePath(bookRoot, targetAbsolutePath);
+
+  if (!targetRelativePath) {
+    throw new Error("Project root cannot be deleted.");
+  }
+
+  const stats = await fs.stat(targetAbsolutePath);
+
+  if (stats.isDirectory()) {
+    await fs.rm(targetAbsolutePath, { recursive: true, force: false });
+  } else {
+    await fs.unlink(targetAbsolutePath);
+  }
+
+  await refreshMainTeX(bookRoot);
+  await touchBook(username, bookId);
+
+  return { ok: true };
+}
+
 function mimeToExt(mimeType) {
   if (!mimeType) return "webm";
   if (mimeType.includes("wav")) return "wav";
@@ -1264,6 +1380,22 @@ function registerIpcHandlers() {
   ipcMain.handle("book:writeFile", async (_event, payload) => {
     const { username, bookId, relativePath, content } = payload;
     return writeProjectFile(normalizeUserName(username), bookId, relativePath, content);
+  });
+  ipcMain.handle("book:createProjectFile", async (_event, payload) => {
+    const { username, bookId, parentRelativePath, name } = payload;
+    return createProjectFile(normalizeUserName(username), bookId, parentRelativePath, name);
+  });
+  ipcMain.handle("book:createProjectDirectory", async (_event, payload) => {
+    const { username, bookId, parentRelativePath, name } = payload;
+    return createProjectDirectory(normalizeUserName(username), bookId, parentRelativePath, name);
+  });
+  ipcMain.handle("book:renameProjectEntry", async (_event, payload) => {
+    const { username, bookId, relativePath, nextName } = payload;
+    return renameProjectEntry(normalizeUserName(username), bookId, relativePath, nextName);
+  });
+  ipcMain.handle("book:deleteProjectEntry", async (_event, payload) => {
+    const { username, bookId, relativePath } = payload;
+    return deleteProjectEntry(normalizeUserName(username), bookId, relativePath);
   });
   ipcMain.handle("book:saveRecording", async (_event, payload) => {
     return saveRecording({ ...payload, username: normalizeUserName(payload.username) });

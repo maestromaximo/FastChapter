@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
 import {
   ArrowLeft,
   BookOpen,
@@ -47,6 +47,14 @@ type AppScreen = "auth" | "bookshelf" | "workspace" | "profile";
 type Notice = {
   tone: "info" | "success" | "error";
   text: string;
+};
+
+type ExplorerContextMenuState = {
+  x: number;
+  y: number;
+  nodePath: string;
+  nodeName: string;
+  nodeType: "file" | "directory";
 };
 
 function isEditableFile(filePath: string) {
@@ -111,13 +119,21 @@ function collectChapterIndexes(nodes: FileNode[]) {
   return [...values].sort((a, b) => a - b);
 }
 
+function getParentDirectoryPath(nodePath: string) {
+  const clean = String(nodePath || "").replaceAll("\\", "/");
+  const slash = clean.lastIndexOf("/");
+  if (slash < 0) return "";
+  return clean.slice(0, slash);
+}
+
 function renderTree(
   nodes: FileNode[],
   depth: number,
   collapsed: Record<string, boolean>,
   onToggle: (path: string) => void,
   selectedPath: string | null,
-  onSelectFile: (path: string) => void
+  onSelectFile: (path: string) => void,
+  onRightClick: (event: ReactMouseEvent<HTMLButtonElement>, node: FileNode) => void
 ): JSX.Element[] {
   return nodes.flatMap((node) => {
     const isDir = node.type === "directory";
@@ -126,7 +142,9 @@ function renderTree(
       <button
         key={node.path}
         type="button"
+        data-tree-node="true"
         onClick={() => (isDir ? onToggle(node.path) : onSelectFile(node.path))}
+        onContextMenu={(event) => onRightClick(event, node)}
         className={`group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition ${
           selectedPath === node.path
             ? "bg-primary/20 text-primary"
@@ -153,7 +171,7 @@ function renderTree(
       return [item];
     }
 
-    return [item, ...renderTree(node.children, depth + 1, collapsed, onToggle, selectedPath, onSelectFile)];
+    return [item, ...renderTree(node.children, depth + 1, collapsed, onToggle, selectedPath, onSelectFile, onRightClick)];
   });
 }
 
@@ -186,6 +204,7 @@ export default function App() {
   const [tree, setTree] = useState<FileNode[]>([]);
   const [collapsedDirs, setCollapsedDirs] = useState<Record<string, boolean>>({});
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [explorerContextMenu, setExplorerContextMenu] = useState<ExplorerContextMenuState | null>(null);
   const [editorContent, setEditorContent] = useState("");
   const [lastSavedContent, setLastSavedContent] = useState("");
   const [isBusy, setIsBusy] = useState(false);
@@ -212,6 +231,7 @@ export default function App() {
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
+  const explorerMenuRef = useRef<HTMLDivElement | null>(null);
 
   const chapterIndexes = useMemo(() => collectChapterIndexes(tree), [tree]);
   const hasRecordings = recordingData.recordings.length > 0;
@@ -383,7 +403,19 @@ export default function App() {
   }, [activeUser]);
 
   useEffect(() => {
+    if (!notice) return;
+
+    const timeoutMs = notice.tone === "error" ? 10000 : 5000;
+    const timer = window.setTimeout(() => {
+      setNotice((current) => (current === notice ? null : current));
+    }, timeoutMs);
+
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  useEffect(() => {
     setIsProfileMenuOpen(false);
+    setExplorerContextMenu(null);
   }, [screen]);
 
   useEffect(() => {
@@ -412,6 +444,30 @@ export default function App() {
     window.addEventListener("mousedown", handleDocumentClick);
     return () => window.removeEventListener("mousedown", handleDocumentClick);
   }, [isProfileMenuOpen]);
+
+  useEffect(() => {
+    const handleDocumentClick = (event: MouseEvent) => {
+      if (!explorerContextMenu) return;
+      if (!explorerMenuRef.current) return;
+      const target = event.target as Node | null;
+      if (target && !explorerMenuRef.current.contains(target)) {
+        setExplorerContextMenu(null);
+      }
+    };
+
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setExplorerContextMenu(null);
+      }
+    };
+
+    window.addEventListener("mousedown", handleDocumentClick);
+    window.addEventListener("keydown", handleEscape);
+    return () => {
+      window.removeEventListener("mousedown", handleDocumentClick);
+      window.removeEventListener("keydown", handleEscape);
+    };
+  }, [explorerContextMenu]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -578,6 +634,153 @@ export default function App() {
 
   const toggleDirectory = (pathValue: string) => {
     setCollapsedDirs((current) => ({ ...current, [pathValue]: !current[pathValue] }));
+  };
+
+  const openExplorerContextMenu = (event: ReactMouseEvent<HTMLButtonElement>, node: FileNode) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setExplorerContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      nodePath: node.path,
+      nodeName: node.name,
+      nodeType: node.type
+    });
+  };
+
+  const openExplorerRootContextMenu = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("[data-tree-node='true']")) return;
+    event.preventDefault();
+    setExplorerContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      nodePath: "",
+      nodeName: "Project",
+      nodeType: "directory"
+    });
+  };
+
+  const handleExplorerCreateEntry = async (kind: "file" | "directory") => {
+    if (!activeUser || !selectedBook || !explorerContextMenu) return;
+
+    const parentRelativePath =
+      explorerContextMenu.nodeType === "directory"
+        ? explorerContextMenu.nodePath
+        : getParentDirectoryPath(explorerContextMenu.nodePath);
+    const defaultName = kind === "file" ? "new-file.tex" : "new-folder";
+    const input = window.prompt(
+      kind === "file" ? "New file name:" : "New folder name:",
+      defaultName
+    );
+    const name = String(input || "").trim();
+
+    setExplorerContextMenu(null);
+
+    if (!name) return;
+
+    try {
+      const created =
+        kind === "file"
+          ? await window.fastChapter.createProjectFile({
+              username: activeUser,
+              bookId: selectedBook.id,
+              parentRelativePath,
+              name
+            })
+          : await window.fastChapter.createProjectDirectory({
+              username: activeUser,
+              bookId: selectedBook.id,
+              parentRelativePath,
+              name
+            });
+
+      await refreshWorkspaceData(activeUser, selectedBook.id, true);
+      await refreshBooks(activeUser);
+
+      if (kind === "file" && isEditableFile(created.path)) {
+        setSelectedPath(created.path);
+      }
+
+      setNotice({
+        tone: "success",
+        text: kind === "file" ? `Created ${created.path}` : `Created folder ${created.path}`
+      });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    }
+  };
+
+  const handleExplorerRenameEntry = async () => {
+    if (!activeUser || !selectedBook || !explorerContextMenu) return;
+
+    const nextNameInput = window.prompt("Rename to:", explorerContextMenu.nodeName);
+    const nextName = String(nextNameInput || "").trim();
+    const previousPath = explorerContextMenu.nodePath;
+    const previousType = explorerContextMenu.nodeType;
+
+    setExplorerContextMenu(null);
+
+    if (!nextName || nextName === explorerContextMenu.nodeName) return;
+
+    try {
+      const renamed = await window.fastChapter.renameProjectEntry({
+        username: activeUser,
+        bookId: selectedBook.id,
+        relativePath: previousPath,
+        nextName
+      });
+
+      if (selectedPath) {
+        if (selectedPath === previousPath) {
+          setSelectedPath(renamed.path);
+        } else if (
+          previousType === "directory" &&
+          selectedPath.startsWith(`${previousPath}/`)
+        ) {
+          setSelectedPath(`${renamed.path}${selectedPath.slice(previousPath.length)}`);
+        }
+      }
+
+      await refreshWorkspaceData(activeUser, selectedBook.id, true);
+      await refreshBooks(activeUser);
+      setNotice({ tone: "success", text: `Renamed to ${renamed.path}` });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    }
+  };
+
+  const handleExplorerDeleteEntry = async () => {
+    if (!activeUser || !selectedBook || !explorerContextMenu) return;
+
+    const noun = explorerContextMenu.nodeType === "directory" ? "folder" : "file";
+    const shouldDelete = window.confirm(`Delete ${noun} "${explorerContextMenu.nodeName}"?`);
+    const targetPath = explorerContextMenu.nodePath;
+    const targetType = explorerContextMenu.nodeType;
+    const targetName = explorerContextMenu.nodeName;
+
+    setExplorerContextMenu(null);
+
+    if (!shouldDelete) return;
+
+    try {
+      await window.fastChapter.deleteProjectEntry({
+        username: activeUser,
+        bookId: selectedBook.id,
+        relativePath: targetPath
+      });
+
+      const selectionWasDeleted =
+        selectedPath === targetPath ||
+        (targetType === "directory" && Boolean(selectedPath?.startsWith(`${targetPath}/`)));
+
+      await refreshWorkspaceData(activeUser, selectedBook.id, !selectionWasDeleted);
+      await refreshBooks(activeUser);
+
+      setNotice({ tone: "success", text: `Deleted ${targetName}` });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    }
   };
 
   const handleStartCapture = async () => {
@@ -890,13 +1093,6 @@ export default function App() {
           </div>
         </section>
 
-        <section className="mx-auto mt-4 flex w-full max-w-[1700px] items-center gap-2 overflow-auto">
-          <Button size="sm" variant="secondary" className="rounded-full">Examples</Button>
-          <Button size="sm" variant="ghost" className="rounded-full text-muted-foreground">Dashboard</Button>
-          <Button size="sm" variant="ghost" className="rounded-full text-muted-foreground">Tasks</Button>
-          <Button size="sm" variant="ghost" className="rounded-full text-muted-foreground">Playground</Button>
-          <Button size="sm" variant="ghost" className="rounded-full text-muted-foreground">Authentication</Button>
-        </section>
 
         <section className="mx-auto mt-4 grid w-full max-w-[1700px] grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           {books.map((book) => (
@@ -1166,11 +1362,19 @@ export default function App() {
               <Plus className="h-4 w-4" />
             </Button>
           </div>
-          <div className="flex-1 overflow-auto">
+          <div className="flex-1 overflow-auto" onContextMenu={openExplorerRootContextMenu}>
             <div className="p-2 space-y-0.5">
-              {renderTree(tree, 0, collapsedDirs, toggleDirectory, selectedPath, (filePath) => {
-                setSelectedPath(filePath);
-              })}
+              {renderTree(
+                tree,
+                0,
+                collapsedDirs,
+                toggleDirectory,
+                selectedPath,
+                (filePath) => {
+                  setSelectedPath(filePath);
+                },
+                openExplorerContextMenu
+              )}
             </div>
           </div>
         </div>
@@ -1386,6 +1590,49 @@ export default function App() {
           </div>
         )}
       </section>
+
+      {explorerContextMenu && (
+        <div
+          ref={explorerMenuRef}
+          className="fixed z-[90] min-w-[180px] rounded-md border border-border/80 bg-card/95 p-1 shadow-xl backdrop-blur"
+          style={{ left: explorerContextMenu.x, top: explorerContextMenu.y }}
+        >
+          <button
+            type="button"
+            className="flex w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+            onClick={() => handleExplorerCreateEntry("file")}
+          >
+            New file
+          </button>
+          <button
+            type="button"
+            className="flex w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+            onClick={() => handleExplorerCreateEntry("directory")}
+          >
+            New folder
+          </button>
+
+          {explorerContextMenu.nodePath && (
+            <>
+              <div className="my-1 h-px bg-border/80" />
+              <button
+                type="button"
+                className="flex w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+                onClick={handleExplorerRenameEntry}
+              >
+                Rename
+              </button>
+              <button
+                type="button"
+                className="flex w-full rounded px-2 py-1.5 text-left text-xs text-rose-300 hover:bg-rose-500/20"
+                onClick={handleExplorerDeleteEntry}
+              >
+                Delete
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       <Dialog
         open={isRecordingDialogOpen}
