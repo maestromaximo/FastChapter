@@ -1105,10 +1105,11 @@ export default function App() {
   }
 
   return (
-    <main className="min-h-screen bg-background px-4 py-4 text-foreground">
-      <section className="mx-auto flex w-full max-w-[1700px] flex-wrap items-center gap-3 rounded-xl border border-border/70 bg-card/70 px-4 py-3 shadow-sm">
+    <main className="flex h-screen w-full flex-col overflow-hidden bg-background text-foreground">
+      <header className="flex w-full shrink-0 flex-wrap items-center gap-3 border-b border-border bg-card/50 px-4 py-2 shadow-sm">
         <Button
-          variant="outline"
+          variant="ghost"
+          size="sm"
           onClick={() => {
             setScreen("bookshelf");
             setSelectedBook(null);
@@ -1118,198 +1119,184 @@ export default function App() {
           Bookshelf
         </Button>
 
-        <Input
-          value={bookTitleDraft}
-          onChange={(event) => setBookTitleDraft(event.target.value)}
-          className="max-w-md"
-          placeholder="Book title"
-        />
-        <Button variant="secondary" onClick={handleRenameBook}>
-          <Check className="mr-2 h-4 w-4" />
-          Update Title
-        </Button>
+        <div className="flex items-center">
+          <Input
+            value={bookTitleDraft}
+            onChange={(event) => setBookTitleDraft(event.target.value)}
+            className="h-8 w-[200px] border-transparent bg-transparent px-2 font-medium hover:border-border focus:border-border"
+            placeholder="Book title"
+          />
+          <Button variant="ghost" size="sm" onClick={handleRenameBook}>
+            <Check className="h-4 w-4" />
+          </Button>
+        </div>
 
-        <Separator orientation="vertical" className="mx-2 h-8" />
+        <Separator orientation="vertical" className="mx-1 h-6" />
 
-        <Button variant="outline" onClick={handleStartProcess}>
+        <Button variant="ghost" size="sm" onClick={handleStartProcess}>
           <Sparkles className="mr-2 h-4 w-4" />
-          Start The Process
+          Start Process
         </Button>
-        <Button onClick={handleWriteMyBook}>
+        <Button variant="secondary" size="sm" onClick={handleWriteMyBook}>
           <WandSparkles className="mr-2 h-4 w-4" />
-          Write My Book
+          Write Book
         </Button>
-        <Button variant={isVoicePaneOpen ? "outline" : "secondary"} onClick={() => setIsVoicePaneOpen((current) => !current)}>
+        <Button variant={isVoicePaneOpen ? "outline" : "ghost"} size="sm" onClick={() => setIsVoicePaneOpen((current) => !current)}>
           Voice Pane ({isVoicePaneOpen ? "On" : "Off"})
         </Button>
 
-        <div className="ml-auto flex items-center gap-2">
-          <Badge variant={hasRecordings ? "success" : "secondary"}>
-            {hasRecordings ? "Process seeded" : "Needs first recording"}
+        <div className="ml-auto flex items-center gap-2 text-xs">
+          <Badge variant={hasRecordings ? "success" : "secondary"} className="text-[10px] uppercase">
+            {hasRecordings ? "Seeded" : "Needs recording"}
           </Badge>
-          <Badge variant="outline">{selectedBook?.id.slice(0, 8)}</Badge>
-          <Badge variant="outline">Ctrl+L</Badge>
+          <span className="font-mono text-muted-foreground">{selectedBook?.id.slice(0, 8)}</span>
+          <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">Ctrl+L</span>
         </div>
-      </section>
+      </header>
 
       <section
-        className={`mx-auto mt-4 grid w-full max-w-[1700px] grid-cols-1 gap-4 ${
-          isVoicePaneOpen ? "xl:grid-cols-[320px_1fr_350px]" : "xl:grid-cols-[320px_1fr]"
+        className={`flex-1 grid min-h-0 w-full grid-cols-1 divide-x divide-border ${
+          isVoicePaneOpen ? "xl:grid-cols-[260px_1fr_320px]" : "xl:grid-cols-[260px_1fr]"
         }`}
       >
-        <Card className="h-[calc(100vh-12rem)] border-border/70 bg-card/65">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between gap-2">
-              <CardTitle className="text-base">Project Navigator</CardTitle>
-              <Button variant="ghost" size="sm" onClick={handleCreateChapter}>
-                <Plus className="mr-1 h-3.5 w-3.5" />
-                Chapter
+        <div className="flex h-full flex-col bg-card/30">
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2.5">
+            <h2 className="text-sm font-semibold tracking-tight">Project Navigator</h2>
+            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCreateChapter}>
+              <Plus className="h-4 w-4" />
+            </Button>
+          </div>
+          <div className="flex-1 overflow-auto">
+            <div className="p-2 space-y-0.5">
+              {renderTree(tree, 0, collapsedDirs, toggleDirectory, selectedPath, (filePath) => {
+                setSelectedPath(filePath);
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex h-full flex-col bg-background min-w-0">
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2 bg-card/30">
+            <h2 className="text-sm font-semibold tracking-tight">Writing Bench</h2>
+            <div className="flex items-center gap-2">
+              <Button
+                variant={autoCompileOnSave ? "secondary" : "ghost"}
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => setAutoCompileOnSave((current) => !current)}
+              >
+                Auto Compile: {autoCompileOnSave ? "On" : "Off"}
+              </Button>
+              <Button variant="outline" size="sm" className="h-8 text-xs" onClick={() => handleCompileLatex()} disabled={isCompilingLatex || isBusy}>
+                {isCompilingLatex ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                Compile
+              </Button>
+              <Button variant="default" size="sm" className="h-8 text-xs" onClick={handleSaveFile} disabled={!editorDirty || !selectedPath || isBusy}>
+                <Save className="mr-1.5 h-3.5 w-3.5" />
+                Save File
               </Button>
             </div>
-            <CardDescription>
-              Files mirror the real local folder structure. Add chapters and edit LaTeX directly.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="h-[calc(100%-7.4rem)] p-0">
-            <ScrollArea className="h-full px-2 pb-3">
-              <div className="space-y-0.5 py-1">
-                {renderTree(tree, 0, collapsedDirs, toggleDirectory, selectedPath, (filePath) => {
-                  setSelectedPath(filePath);
-                })}
+          </div>
+          
+          <div className="flex-1 grid min-h-0 grid-cols-1 divide-x divide-border xl:grid-cols-2">
+            <div className="flex flex-col min-h-0">
+              <div className="flex shrink-0 items-center border-b border-border bg-muted/20 px-4 py-2">
+                <span className="font-mono text-xs text-muted-foreground">{selectedPath || "No file selected"}</span>
               </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
-
-        <Card className="h-[calc(100vh-12rem)] border-border/70 bg-card/65">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between gap-2">
-              <CardTitle className="text-base">Writing Bench</CardTitle>
-              <div className="flex items-center gap-2">
-                <Button
-                  variant={autoCompileOnSave ? "outline" : "ghost"}
-                  size="sm"
-                  onClick={() => setAutoCompileOnSave((current) => !current)}
-                >
-                  Auto Compile: {autoCompileOnSave ? "On" : "Off"}
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => handleCompileLatex()} disabled={isCompilingLatex || isBusy}>
-                  {isCompilingLatex ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : null}
-                  Compile
-                </Button>
-                <Button variant="secondary" size="sm" onClick={handleSaveFile} disabled={!editorDirty || !selectedPath || isBusy}>
-                  <Save className="mr-2 h-3.5 w-3.5" />
-                  Save File
-                </Button>
-              </div>
+              <Textarea
+                value={editorContent}
+                onChange={(event) => setEditorContent(event.target.value)}
+                className="flex-1 resize-none rounded-none border-0 bg-transparent p-4 font-mono text-[13px] leading-relaxed focus-visible:ring-0 focus-visible:ring-offset-0"
+                placeholder="Select a file from the navigator..."
+              />
             </div>
-            <CardDescription>
-              Left: editable LaTeX/source. Right: real compiled PDF preview from `main.tex`.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="h-[calc(100%-7.4rem)]">
-            <div className="grid h-full grid-cols-1 gap-3 xl:grid-cols-2">
-              <div className="flex min-h-0 flex-col gap-2">
-                <Label className="text-xs text-muted-foreground">Current file</Label>
-                <div className="rounded-md border border-border px-3 py-2 text-xs text-foreground/80">{selectedPath || "No file selected"}</div>
-                <Textarea
-                  value={editorContent}
-                  onChange={(event) => setEditorContent(event.target.value)}
-                  className="min-h-0 flex-1 resize-none font-mono text-xs leading-relaxed"
-                  placeholder="Select a file from the navigator..."
-                />
-              </div>
 
-              <div className="flex min-h-0 flex-col rounded-lg border border-border/70 bg-muted/20 p-4">
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-xs uppercase tracking-wider text-muted-foreground">Preview</p>
-                  <Badge variant={latexPreviewUrl ? "success" : "secondary"}>
-                    {latexPreviewUrl ? "Compiled PDF ready" : "No compiled PDF"}
+            <div className="flex flex-col min-h-0 bg-muted/10">
+              <div className="flex shrink-0 items-center gap-3 border-b border-border bg-muted/20 px-4 py-2">
+                <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">Preview</span>
+                <Badge variant={latexPreviewUrl ? "success" : "secondary"} className="h-5 px-1.5 text-[10px]">
+                  {latexPreviewUrl ? "Compiled PDF ready" : "No compiled PDF"}
+                </Badge>
+                {lastLatexCompile && (
+                  <Badge variant="outline" className="h-5 px-1.5 text-[10px]">
+                    {lastLatexCompile.compiler}
+                    {lastLatexCompile.cached ? " (cached)" : ""}
                   </Badge>
-                  {lastLatexCompile && (
-                    <Badge variant="outline">
-                      {lastLatexCompile.compiler}
-                      {lastLatexCompile.cached ? " (cached)" : ""}
-                    </Badge>
-                  )}
-                </div>
-                <div className="mt-3 min-h-0 flex-1 overflow-auto rounded-md border border-dashed border-border/60 bg-background/70 p-4">
-                  {isCompilingLatex && (
-                    <div className="grid h-full place-items-center text-sm text-muted-foreground">
-                      <span className="inline-flex items-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                        Compiling LaTeX...
-                      </span>
-                    </div>
-                  )}
+                )}
+              </div>
+              <div className="flex-1 flex flex-col min-h-0 overflow-auto p-4">
+                {isCompilingLatex && (
+                  <div className="grid h-full place-items-center text-sm text-muted-foreground">
+                    <span className="inline-flex items-center gap-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Compiling LaTeX...
+                    </span>
+                  </div>
+                )}
 
-                  {!isCompilingLatex && latexPreviewUrl && (
-                    <iframe
-                      title="LaTeX PDF Preview"
-                      src={latexPreviewUrl}
-                      className="h-full w-full rounded-md border border-border/60 bg-background"
-                    />
-                  )}
+                {!isCompilingLatex && latexPreviewUrl && (
+                  <iframe
+                    title="LaTeX PDF Preview"
+                    src={latexPreviewUrl}
+                    className="h-full w-full rounded-md border border-border/60 bg-white shadow-sm"
+                  />
+                )}
 
-                  {!isCompilingLatex && !latexPreviewUrl && (
-                    <div className="grid h-full place-items-center text-center">
-                      <div>
-                        <p className="font-serif text-lg">No PDF preview yet</p>
-                        <p className="mt-2 text-sm text-muted-foreground">
-                          Click Compile to render `main.tex` with your installed LaTeX toolchain.
+                {!isCompilingLatex && !latexPreviewUrl && (
+                  <div className="grid h-full place-items-center text-center">
+                    <div>
+                      <p className="font-serif text-lg">No PDF preview yet</p>
+                      <p className="mt-2 text-sm text-muted-foreground">
+                        Click Compile to render `main.tex` with your installed LaTeX toolchain.
+                      </p>
+                      {latexCompileError && (
+                        <p className="mt-2 max-w-xl rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-left text-xs text-rose-200">
+                          {latexCompileError}
                         </p>
-                        {latexCompileError && (
-                          <p className="mt-2 max-w-xl rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-left text-xs text-rose-200">
-                            {latexCompileError}
-                          </p>
-                        )}
-                      </div>
+                      )}
                     </div>
-                  )}
-                </div>
+                  </div>
+                )}
 
                 {lastLatexCompile && (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Last compile: {formatDate(lastLatexCompile.generatedAt)} · {formatDurationMs(lastLatexCompile.durationMs)}
-                  </p>
-                )}
-
-                {lastLatexCompile?.logTail && (
-                  <details className="mt-2 rounded-md border border-border/60 bg-background/60 p-2 text-xs">
-                    <summary className="cursor-pointer text-muted-foreground">Compiler log tail</summary>
-                    <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground/80">
-                      {lastLatexCompile.logTail}
-                    </pre>
-                  </details>
+                  <div className="mt-4 shrink-0">
+                    <p className="text-[11px] text-muted-foreground">
+                      Last compile: {formatDate(lastLatexCompile.generatedAt)} · {formatDurationMs(lastLatexCompile.durationMs)}
+                    </p>
+                    {lastLatexCompile.logTail && (
+                      <details className="mt-2 rounded-md border border-border/60 bg-background/60 p-2 text-xs">
+                        <summary className="cursor-pointer text-muted-foreground">Compiler log tail</summary>
+                        <pre className="mt-2 whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed text-foreground/80">
+                          {lastLatexCompile.logTail}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
         {isVoicePaneOpen && (
-        <Card className="h-[calc(100vh-12rem)] border-border/70 bg-card/65">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between gap-2">
-              <CardTitle className="text-base">Voice Workflow</CardTitle>
-              <Button
-                size="sm"
-                onClick={() => {
-                  setRecordingKind(hasRecordings ? "chapter-recording" : "initial-outline");
-                  setIsRecordingDialogOpen(true);
-                }}
-              >
-                <Mic className="mr-2 h-3.5 w-3.5" />
-                Record
-              </Button>
-            </div>
-            <CardDescription>
-              Capture your outline and chapter narration. Transcriptions are saved into the project folder.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="h-[calc(100%-7.4rem)] p-0">
-            <ScrollArea className="h-full px-4 pb-4">
-              <div className="space-y-4 py-1">
+        <div className="flex h-full flex-col bg-card/30">
+          <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2.5">
+            <h2 className="text-sm font-semibold tracking-tight">Voice Workflow</h2>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="h-7 text-xs"
+              onClick={() => {
+                setRecordingKind(hasRecordings ? "chapter-recording" : "initial-outline");
+                setIsRecordingDialogOpen(true);
+              }}
+            >
+              <Mic className="mr-1.5 h-3.5 w-3.5" />
+              Record
+            </Button>
+          </div>
+          <div className="flex-1 overflow-auto">
+            <div className="p-4 space-y-4">
                 <div className="rounded-lg border border-border/60 bg-muted/20 p-3">
                   <p className="text-xs uppercase tracking-wide text-muted-foreground">Pipeline</p>
                   <div className="mt-2 space-y-2 text-sm">
@@ -1395,9 +1382,8 @@ export default function App() {
                   </div>
                 </div>
               </div>
-            </ScrollArea>
-          </CardContent>
-        </Card>
+            </div>
+          </div>
         )}
       </section>
 
