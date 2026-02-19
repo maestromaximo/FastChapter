@@ -556,6 +556,26 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      const withModifier = event.ctrlKey || event.metaKey;
+
+      if (!withModifier || key !== "s") return;
+      if (screen !== "workspace") return;
+
+      event.preventDefault();
+
+      if (!editorDirty || !selectedPath || isBusy) return;
+      handleSaveFile().catch(() => {
+        // Save errors are surfaced by handleSaveFile notice handling.
+      });
+    };
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editorDirty, handleSaveFile, isBusy, screen, selectedPath]);
+
   const toggleDirectory = (pathValue: string) => {
     setCollapsedDirs((current) => ({ ...current, [pathValue]: !current[pathValue] }));
   };
