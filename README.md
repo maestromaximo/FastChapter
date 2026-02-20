@@ -80,6 +80,17 @@ npm run start
 
 - Book export (PDF + source bundle)
 
+## Codex Prompt Templates
+
+Developer-owned prompt templates for `Write Book` live in:
+
+- `prompts/book-context.md`
+- `prompts/write-first-chapter.md`
+- `prompts/write-next-chapter.md`
+- `prompts/verify-main-tex.md`
+
+These are loaded by the Electron backend and are not scaffolded into user book folders.
+
 ## LaTeX Preview
 
 - Fast Chapter now compiles `main.tex` to a real PDF preview in the workspace.

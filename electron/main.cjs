@@ -32,12 +32,13 @@ const LATEX_IGNORED_DIRS = new Set([
   ".git",
   "node_modules"
 ]);
-const CODEX_PROMPTS_DIR = "prompts";
 const CODEX_PROMPT_FILES = {
   bookContext: "book-context.md",
   firstChapter: "write-first-chapter.md",
-  nextChapter: "write-next-chapter.md"
+  nextChapter: "write-next-chapter.md",
+  verifyMainTex: "verify-main-tex.md"
 };
+const CODEX_PROMPTS_ROOT = path.join(__dirname, "..", "prompts");
 const WRITE_BOOK_LOG_LINE_LIMIT = 2500;
 const WRITE_BOOK_LOG_LINE_LENGTH_LIMIT = 1200;
 const WRITE_BOOK_POLL_LOG_LIMIT = 200;
@@ -185,18 +186,6 @@ async function ensureLatexScaffold(bookRoot) {
   const mainPath = path.join(bookRoot, "main.tex");
   if (!(await fileExists(mainPath))) {
     await refreshMainTeX(bookRoot);
-  }
-}
-
-async function ensureCodexPromptScaffold(bookRoot) {
-  const promptsRoot = path.join(bookRoot, CODEX_PROMPTS_DIR);
-  await ensureDir(promptsRoot);
-
-  for (const fileName of Object.values(CODEX_PROMPT_FILES)) {
-    const promptPath = path.join(promptsRoot, fileName);
-    if (!(await fileExists(promptPath))) {
-      await fs.writeFile(promptPath, "", "utf8");
-    }
   }
 }
 
@@ -737,7 +726,6 @@ async function createBook(username, titleRaw) {
   await ensureDir(path.join(bookRoot, "transcriptions"));
   await ensureDir(path.join(bookRoot, "recordings"));
   await ensureLatexScaffold(bookRoot);
-  await ensureCodexPromptScaffold(bookRoot);
 
   const metadata = {
     id,
@@ -812,7 +800,6 @@ async function getBookTree(username, bookId) {
   const root = getBookRoot(username, bookId);
   await assertBookExists(root, bookId);
   await ensureLatexScaffold(root);
-  await ensureCodexPromptScaffold(root);
   return readTree(root, root);
 }
 
@@ -1570,7 +1557,6 @@ async function getWriteBookChecklist(username, bookId) {
   const bookRoot = getBookRoot(username, bookId);
   await assertBookExists(bookRoot, bookId);
   await ensureLatexScaffold(bookRoot);
-  await ensureCodexPromptScaffold(bookRoot);
 
   const bookMetaPath = path.join(bookRoot, "book.json");
   let bookTitle = "Untitled Book";
@@ -1754,17 +1740,15 @@ function applyPromptVariables(template, variables) {
   );
 }
 
-async function loadCodexPromptTemplates(bookRoot) {
-  await ensureCodexPromptScaffold(bookRoot);
-  const promptsRoot = path.join(bookRoot, CODEX_PROMPTS_DIR);
-
+async function loadCodexPromptTemplates() {
   const readPrompt = async (fileName) =>
-    readTextOrEmpty(path.join(promptsRoot, fileName)).then((value) => value.trim());
+    readTextOrEmpty(path.join(CODEX_PROMPTS_ROOT, fileName)).then((value) => value.trim());
 
   return {
     bookContext: await readPrompt(CODEX_PROMPT_FILES.bookContext),
     firstChapter: await readPrompt(CODEX_PROMPT_FILES.firstChapter),
-    nextChapter: await readPrompt(CODEX_PROMPT_FILES.nextChapter)
+    nextChapter: await readPrompt(CODEX_PROMPT_FILES.nextChapter),
+    verifyMainTex: await readPrompt(CODEX_PROMPT_FILES.verifyMainTex)
   };
 }
 
@@ -1845,6 +1829,41 @@ function buildChapterPrompt({
     : fallbackTaskPrompt;
 
   return [bookContextPrompt, taskPrompt].filter(Boolean).join("\n\n");
+}
+
+function buildVerifyMainTexPrompt({
+  bookTitle,
+  totalChapters,
+  chapterOverview,
+  promptTemplates
+}) {
+  const variables = {
+    BOOK_TITLE: bookTitle,
+    TOTAL_CHAPTERS: String(totalChapters),
+    CHAPTER_OVERVIEW: chapterOverview,
+    MAIN_TEX_FILE: "main.tex"
+  };
+
+  const fallbackPrompt = [
+    `Final verification step for "${bookTitle}".`,
+    "",
+    "Open and validate `main.tex`.",
+    "- Ensure chapter includes match existing chapter files.",
+    "- Ensure cover/back page includes are intact.",
+    "- Keep LaTeX structure consistent and valid.",
+    "- If mismatches exist, fix `main.tex` directly.",
+    "",
+    "Chapter map:",
+    chapterOverview,
+    "",
+    "Return a concise summary of any fixes."
+  ].join("\n");
+
+  if (!promptTemplates.verifyMainTex) {
+    return fallbackPrompt;
+  }
+
+  return applyPromptVariables(promptTemplates.verifyMainTex, variables);
 }
 
 function formatChapterOverview(chapters) {
@@ -1998,7 +2017,6 @@ async function runWriteBookSession(session) {
 
     await assertBookExists(bookRoot, bookId);
     await ensureLatexScaffold(bookRoot);
-    await ensureCodexPromptScaffold(bookRoot);
 
     const checklist = await getWriteBookChecklist(username, bookId);
     const codexStatus = await checkCodexAvailability();
@@ -2039,7 +2057,7 @@ async function runWriteBookSession(session) {
 
     const chapterOverview = formatChapterOverview(checklist.chapters);
     const initialOutlineOverview = formatInitialOutlineOverview(checklist);
-    const templates = await loadCodexPromptTemplates(bookRoot);
+    const templates = await loadCodexPromptTemplates();
 
     if (checklist.chapters.length === 0) {
       throw new Error("No chapters found. Create chapter folders first.");
@@ -2083,6 +2101,16 @@ async function runWriteBookSession(session) {
       }
       appendWriteBookLog(session, "success", `Chapter ${chapter.index} turn completed.`);
     }
+
+    appendWriteBookLog(session, "info", "Running final `main.tex` verification step.");
+    const verifyMainTexPrompt = buildVerifyMainTexPrompt({
+      bookTitle: checklist.bookTitle,
+      totalChapters: checklist.chapters.length,
+      chapterOverview,
+      promptTemplates: templates
+    });
+    await runCodexTurn(session, thread, verifyMainTexPrompt);
+    appendWriteBookLog(session, "success", "Final `main.tex` verification completed.");
 
     await touchBook(username, bookId);
     session.status = "completed";
