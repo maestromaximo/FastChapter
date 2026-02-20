@@ -2203,7 +2203,7 @@ export default function App() {
         <Card className="relative z-10 w-full max-w-xl border-border bg-card/85 backdrop-blur-lg">
           <CardHeader>
             <CardTitle className="flex items-center gap-3 text-3xl">
-              <img src="/logo.png" alt="Fast Chapter" className="h-12 w-12 rounded-lg object-cover" />
+              <img src="/logo_no_background.svg" alt="Fast Chapter" className="h-12 w-12 object-contain" />
               Fast Chapter
             </CardTitle>
             <CardDescription>

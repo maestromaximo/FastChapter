@@ -1,0 +1,43 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="fastChapterNeonGradIcon" x1="0" y1="100" x2="512" y2="400" gradientUnits="userSpaceOnUse">
+<stop offset="0%" stop-color="#3793FF" />
+<stop offset="50%" stop-color="#40CBD8" />
+<stop offset="100%" stop-color="#71FBD9" />
+</linearGradient>
+<linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="512" gradientUnits="userSpaceOnUse">
+<stop stop-color="#1E293B" /> <stop offset="1" stop-color="#0F172A" /> </linearGradient>
+<filter id="softGlowIcon" x="-50%" y="-50%" width="200%" height="200%">
+<feGaussianBlur in="SourceGraphic" stdDeviation="6" result="blur" />
+<feColorMatrix in="blur" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 0.6 0" result="softBlur"/>
+<feMerge>
+<feMergeNode in="softBlur"/>
+<feMergeNode in="SourceGraphic"/>
+</feMerge>
+</filter>
+</defs>
+
+<rect width="512" height="512" rx="110" fill="url(#bgGrad)"/>
+
+<g transform="translate(135, 100) scale(0.85) skewX(-12)" filter="url(#softGlowIcon)">
+
+<g opacity="0.15" stroke="url(#fastChapterNeonGradIcon)" stroke-width="10" stroke-linecap="round">
+<path d="M-40 120 H80" transform="translate(-20, 20)"/>
+<path d="M-20 220 H60" transform="translate(-30, 30)"/>
+<path d="M-40 320 H40" transform="translate(-20, 40)"/>
+</g>
+
+<g stroke="url(#fastChapterNeonGradIcon)" stroke-width="44" stroke-linecap="round" stroke-linejoin="round">
+<path d="M200 40C90 40 20 100 20 100V400C20 400 90 340 200 340V40Z"/>
+<path d="M200 340C310 340 380 400 380 400V100C380 100 310 40 200 40"/>
+</g>
+
+<g stroke="url(#fastChapterNeonGradIcon)" stroke-linecap="round">
+<path d="M200 90V300" stroke-width="36"/>
+<path d="M135 130V260" stroke-width="28"/>
+<path d="M265 130V260" stroke-width="28"/>
+<path d="M80 160V230" stroke-width="20"/>
+<path d="M320 160V230" stroke-width="20"/>
+</g>
+</g>
+</svg>

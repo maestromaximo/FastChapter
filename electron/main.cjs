@@ -2,7 +2,7 @@ const path = require("node:path");
 const fs = require("node:fs/promises");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell, nativeImage } = require("electron");
 const { v4: uuidv4 } = require("uuid");
 
 const USERS_DIR = "users";
@@ -2994,10 +2994,13 @@ function registerIpcHandlers() {
 }
 
 function createWindow() {
-  const appIconPath = path.join(__dirname, "..", "logo.png");
+  const preferredAppIconPath = path.join(__dirname, "..", "logo_app_logo.svg");
+  const fallbackAppIconPath = path.join(__dirname, "..", "logo.png");
+  const preferredAppIcon = nativeImage.createFromPath(preferredAppIconPath);
+  const appIcon = preferredAppIcon.isEmpty() ? nativeImage.createFromPath(fallbackAppIconPath) : preferredAppIcon;
 
   if (process.platform === "darwin" && app.dock?.setIcon) {
-    app.dock.setIcon(appIconPath);
+    app.dock.setIcon(appIcon);
   }
 
   const win = new BrowserWindow({
@@ -3007,7 +3010,7 @@ function createWindow() {
     minHeight: 760,
     backgroundColor: "#08131f",
     title: "Fast Chapter",
-    icon: appIconPath,
+    icon: appIcon,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
