@@ -76,6 +76,53 @@ npm run build
 npm run start
 ```
 
+## Desktop Distribution (Windows + macOS)
+
+Fast Chapter now includes an `electron-builder` packaging setup.
+
+Build commands:
+
+```bash
+# Build both targets for the current OS config
+npm run dist
+
+# Windows artifacts (.exe installer + portable .exe)
+npm run dist:win
+
+# macOS artifacts (.dmg + .zip)
+npm run dist:mac
+```
+
+Artifacts are written to `release/`.
+
+### Which file should you share?
+
+- Windows (recommended): `*-setup.exe`
+  - Installer flow.
+  - Can create desktop + Start Menu shortcuts.
+  - Shows up like a normal installed app.
+- Windows (no installer): `*-portable.exe`
+  - Runs directly after download.
+  - No automatic install/Start Menu registration.
+- macOS (recommended): `*.dmg`
+  - Users drag app to `/Applications`.
+  - Then it appears in Launchpad/Applications like a normal app.
+- macOS (alternative): `*.zip`
+  - App bundle archive without DMG wrapper.
+
+Notes:
+- Building macOS artifacts requires macOS runners/machines.
+- Building Windows artifacts is best done on Windows runners/machines.
+- Unsigned builds may show OS security warnings on first launch.
+
+### GitHub Actions Build
+
+This repo includes `.github/workflows/build-desktop.yml`:
+
+- Builds on `windows-latest` and `macos-latest`.
+- Uploads artifacts on each workflow run.
+- If triggered by a published GitHub Release, assets are attached to the release automatically.
+
 ## Next Integrations
 
 - Book export (PDF + source bundle)
