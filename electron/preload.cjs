@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld("fastChapter", {
   createProjectDirectory: (payload) => ipcRenderer.invoke("book:createProjectDirectory", payload),
   renameProjectEntry: (payload) => ipcRenderer.invoke("book:renameProjectEntry", payload),
   deleteProjectEntry: (payload) => ipcRenderer.invoke("book:deleteProjectEntry", payload),
+  writeProjectBinaryFile: (payload) => ipcRenderer.invoke("book:writeBinaryFile", payload),
+  moveProjectEntry: (payload) => ipcRenderer.invoke("book:moveProjectEntry", payload),
   compileLatex: (payload) => ipcRenderer.invoke("book:compileLatex", payload),
   saveRecording: (payload) => ipcRenderer.invoke("book:saveRecording", payload),
   listRecordings: (payload) => ipcRenderer.invoke("book:listRecordings", payload),

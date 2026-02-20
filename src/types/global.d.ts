@@ -61,6 +61,18 @@ declare global {
         bookId: string;
         relativePath: string;
       }) => Promise<{ ok: true }>;
+      writeProjectBinaryFile: (payload: {
+        username: string;
+        bookId: string;
+        relativePath: string;
+        base64Content: string;
+      }) => Promise<{ ok: true; path: string }>;
+      moveProjectEntry: (payload: {
+        username: string;
+        bookId: string;
+        relativePath: string;
+        targetParentRelativePath?: string;
+      }) => Promise<{ ok: true; path: string }>;
       compileLatex: (payload: {
         username: string;
         bookId: string;

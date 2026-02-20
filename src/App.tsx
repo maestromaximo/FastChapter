@@ -1,4 +1,12 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent as ReactChangeEvent,
+  type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent
+} from "react";
 import {
   ArrowLeft,
   BookOpen,
@@ -7,6 +15,7 @@ import {
   ChevronRight,
   FileText,
   Folder,
+  FolderPlus,
   FolderOpen,
   KeyRound,
   LibraryBig,
@@ -20,6 +29,7 @@ import {
   Settings,
   Sparkles,
   Sun,
+  Upload,
   UserCircle2,
   WandSparkles
 } from "lucide-react";
@@ -55,6 +65,29 @@ type ExplorerContextMenuState = {
   nodePath: string;
   nodeName: string;
   nodeType: "file" | "directory";
+};
+
+type MenuPosition = {
+  left: number;
+  top: number;
+};
+
+type ExplorerEntryDialogState = {
+  mode: "create-file" | "create-folder" | "rename";
+  parentRelativePath?: string;
+  targetPath?: string;
+  targetType?: "file" | "directory";
+  initialName: string;
+};
+
+type UploadCandidate = {
+  relativePath: string;
+  file: File;
+};
+
+type ExplorerDragState = {
+  path: string;
+  type: "file" | "directory";
 };
 
 function isEditableFile(filePath: string) {
@@ -126,6 +159,23 @@ function getParentDirectoryPath(nodePath: string) {
   return clean.slice(0, slash);
 }
 
+function normalizeRelativePath(value: string) {
+  return String(value || "")
+    .replaceAll("\\", "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/\/$/, "");
+}
+
+function joinRelativePath(parent: string, child: string) {
+  const a = normalizeRelativePath(parent);
+  const b = normalizeRelativePath(child);
+  if (!a) return b;
+  if (!b) return a;
+  return `${a}/${b}`;
+}
+
 function renderTree(
   nodes: FileNode[],
   depth: number,
@@ -133,23 +183,36 @@ function renderTree(
   onToggle: (path: string) => void,
   selectedPath: string | null,
   onSelectFile: (path: string) => void,
-  onRightClick: (event: ReactMouseEvent<HTMLButtonElement>, node: FileNode) => void
+  onRightClick: (event: ReactMouseEvent<HTMLButtonElement>, node: FileNode) => void,
+  dragState: ExplorerDragState | null,
+  dropTargetDirectory: string | null,
+  onDragStart: (event: ReactDragEvent<HTMLButtonElement>, node: FileNode) => void,
+  onDragEnd: () => void,
+  onDragOverNode: (event: ReactDragEvent<HTMLButtonElement>, node: FileNode) => void,
+  onDropOnNode: (event: ReactDragEvent<HTMLButtonElement>, node: FileNode) => void
 ): JSX.Element[] {
   return nodes.flatMap((node) => {
     const isDir = node.type === "directory";
     const isCollapsed = Boolean(collapsed[node.path]);
+    const isDropTarget = isDir && dropTargetDirectory === node.path;
+    const isBeingDragged = dragState?.path === node.path;
     const item = (
       <button
         key={node.path}
         type="button"
+        draggable
         data-tree-node="true"
         onClick={() => (isDir ? onToggle(node.path) : onSelectFile(node.path))}
         onContextMenu={(event) => onRightClick(event, node)}
+        onDragStart={(event) => onDragStart(event, node)}
+        onDragEnd={onDragEnd}
+        onDragOver={(event) => onDragOverNode(event, node)}
+        onDrop={(event) => onDropOnNode(event, node)}
         className={`group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition ${
           selectedPath === node.path
             ? "bg-primary/20 text-primary"
             : "text-foreground/80 hover:bg-accent/70 hover:text-foreground"
-        }`}
+        } ${isDropTarget ? "ring-1 ring-primary/70 bg-primary/10" : ""} ${isBeingDragged ? "opacity-50" : ""}`}
         style={{ paddingLeft: `${depth * 12 + 10}px` }}
       >
         {isDir ? (
@@ -171,7 +234,24 @@ function renderTree(
       return [item];
     }
 
-    return [item, ...renderTree(node.children, depth + 1, collapsed, onToggle, selectedPath, onSelectFile, onRightClick)];
+    return [
+      item,
+      ...renderTree(
+        node.children,
+        depth + 1,
+        collapsed,
+        onToggle,
+        selectedPath,
+        onSelectFile,
+        onRightClick,
+        dragState,
+        dropTargetDirectory,
+        onDragStart,
+        onDragEnd,
+        onDragOverNode,
+        onDropOnNode
+      )
+    ];
   });
 }
 
@@ -205,6 +285,12 @@ export default function App() {
   const [collapsedDirs, setCollapsedDirs] = useState<Record<string, boolean>>({});
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [explorerContextMenu, setExplorerContextMenu] = useState<ExplorerContextMenuState | null>(null);
+  const [explorerContextMenuPosition, setExplorerContextMenuPosition] = useState<MenuPosition>({ left: 0, top: 0 });
+  const [explorerEntryDialog, setExplorerEntryDialog] = useState<ExplorerEntryDialogState | null>(null);
+  const [explorerEntryNameInput, setExplorerEntryNameInput] = useState("");
+  const [draggedExplorerNode, setDraggedExplorerNode] = useState<ExplorerDragState | null>(null);
+  const [explorerDropTargetDirectory, setExplorerDropTargetDirectory] = useState<string | null>(null);
+  const [isExplorerDropZoneActive, setIsExplorerDropZoneActive] = useState(false);
   const [editorContent, setEditorContent] = useState("");
   const [lastSavedContent, setLastSavedContent] = useState("");
   const [isBusy, setIsBusy] = useState(false);
@@ -232,6 +318,9 @@ export default function App() {
   const chunksRef = useRef<Blob[]>([]);
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const explorerMenuRef = useRef<HTMLDivElement | null>(null);
+  const uploadFilesInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadFolderInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadTargetPathRef = useRef<string>("");
 
   const chapterIndexes = useMemo(() => collectChapterIndexes(tree), [tree]);
   const hasRecordings = recordingData.recordings.length > 0;
@@ -243,6 +332,7 @@ export default function App() {
     (job) => job.status === "queued" || job.status === "in_progress"
   );
   const failedJobs = recordingData.jobs.filter((job) => job.status === "failed");
+  const folderUploadInputProps = { webkitdirectory: "", directory: "" } as any;
 
   const refreshBooks = async (username: string) => {
     const result = await window.fastChapter.listBooks(username);
@@ -416,6 +506,10 @@ export default function App() {
   useEffect(() => {
     setIsProfileMenuOpen(false);
     setExplorerContextMenu(null);
+    setExplorerEntryDialog(null);
+    setDraggedExplorerNode(null);
+    setExplorerDropTargetDirectory(null);
+    setIsExplorerDropZoneActive(false);
   }, [screen]);
 
   useEffect(() => {
@@ -636,9 +730,25 @@ export default function App() {
     setCollapsedDirs((current) => ({ ...current, [pathValue]: !current[pathValue] }));
   };
 
+  const remapSelectedPathAfterPathChange = (
+    sourcePath: string,
+    destinationPath: string,
+    entryType: "file" | "directory"
+  ) => {
+    setSelectedPath((current) => {
+      if (!current) return current;
+      if (current === sourcePath) return destinationPath;
+      if (entryType === "directory" && current.startsWith(`${sourcePath}/`)) {
+        return `${destinationPath}${current.slice(sourcePath.length)}`;
+      }
+      return current;
+    });
+  };
+
   const openExplorerContextMenu = (event: ReactMouseEvent<HTMLButtonElement>, node: FileNode) => {
     event.preventDefault();
     event.stopPropagation();
+    setExplorerContextMenuPosition({ left: event.clientX, top: event.clientY });
     setExplorerContextMenu({
       x: event.clientX,
       y: event.clientY,
@@ -652,6 +762,7 @@ export default function App() {
     const target = event.target as HTMLElement | null;
     if (target?.closest("[data-tree-node='true']")) return;
     event.preventDefault();
+    setExplorerContextMenuPosition({ left: event.clientX, top: event.clientY });
     setExplorerContextMenu({
       x: event.clientX,
       y: event.clientY,
@@ -661,87 +772,135 @@ export default function App() {
     });
   };
 
-  const handleExplorerCreateEntry = async (kind: "file" | "directory") => {
-    if (!activeUser || !selectedBook || !explorerContextMenu) return;
+  useEffect(() => {
+    if (!explorerContextMenu || !explorerMenuRef.current) return;
 
+    const margin = 8;
+    const rect = explorerMenuRef.current.getBoundingClientRect();
+    const maxLeft = Math.max(margin, window.innerWidth - rect.width - margin);
+    const maxTop = Math.max(margin, window.innerHeight - rect.height - margin);
+    const left = Math.min(Math.max(explorerContextMenu.x, margin), maxLeft);
+    const top = Math.min(Math.max(explorerContextMenu.y, margin), maxTop);
+
+    setExplorerContextMenuPosition((current) =>
+      current.left === left && current.top === top ? current : { left, top }
+    );
+  }, [explorerContextMenu]);
+
+  const openUploadFilesPicker = (targetParentRelativePath = "") => {
+    uploadTargetPathRef.current = normalizeRelativePath(targetParentRelativePath);
+    uploadFilesInputRef.current?.click();
+  };
+
+  const openUploadFolderPicker = (targetParentRelativePath = "") => {
+    uploadTargetPathRef.current = normalizeRelativePath(targetParentRelativePath);
+    uploadFolderInputRef.current?.click();
+  };
+
+  const handleExplorerCreateEntry = (kind: "file" | "directory") => {
+    if (!explorerContextMenu) return;
     const parentRelativePath =
       explorerContextMenu.nodeType === "directory"
         ? explorerContextMenu.nodePath
         : getParentDirectoryPath(explorerContextMenu.nodePath);
-    const defaultName = kind === "file" ? "new-file.tex" : "new-folder";
-    const input = window.prompt(
-      kind === "file" ? "New file name:" : "New folder name:",
-      defaultName
-    );
-    const name = String(input || "").trim();
-
+    setExplorerEntryDialog({
+      mode: kind === "file" ? "create-file" : "create-folder",
+      parentRelativePath,
+      initialName: kind === "file" ? "new-file.tex" : "new-folder"
+    });
+    setExplorerEntryNameInput(kind === "file" ? "new-file.tex" : "new-folder");
     setExplorerContextMenu(null);
-
-    if (!name) return;
-
-    try {
-      const created =
-        kind === "file"
-          ? await window.fastChapter.createProjectFile({
-              username: activeUser,
-              bookId: selectedBook.id,
-              parentRelativePath,
-              name
-            })
-          : await window.fastChapter.createProjectDirectory({
-              username: activeUser,
-              bookId: selectedBook.id,
-              parentRelativePath,
-              name
-            });
-
-      await refreshWorkspaceData(activeUser, selectedBook.id, true);
-      await refreshBooks(activeUser);
-
-      if (kind === "file" && isEditableFile(created.path)) {
-        setSelectedPath(created.path);
-      }
-
-      setNotice({
-        tone: "success",
-        text: kind === "file" ? `Created ${created.path}` : `Created folder ${created.path}`
-      });
-    } catch (error) {
-      setNotice({ tone: "error", text: String(error) });
-    }
   };
 
-  const handleExplorerRenameEntry = async () => {
-    if (!activeUser || !selectedBook || !explorerContextMenu) return;
-
-    const nextNameInput = window.prompt("Rename to:", explorerContextMenu.nodeName);
-    const nextName = String(nextNameInput || "").trim();
-    const previousPath = explorerContextMenu.nodePath;
-    const previousType = explorerContextMenu.nodeType;
-
+  const handleExplorerRenameEntry = () => {
+    if (!explorerContextMenu || !explorerContextMenu.nodePath) return;
+    setExplorerEntryDialog({
+      mode: "rename",
+      targetPath: explorerContextMenu.nodePath,
+      targetType: explorerContextMenu.nodeType,
+      initialName: explorerContextMenu.nodeName
+    });
+    setExplorerEntryNameInput(explorerContextMenu.nodeName);
     setExplorerContextMenu(null);
+  };
 
-    if (!nextName || nextName === explorerContextMenu.nodeName) return;
+  const handleExplorerUploadFilesAction = () => {
+    if (!explorerContextMenu) return;
+    const targetParent =
+      explorerContextMenu.nodeType === "directory"
+        ? explorerContextMenu.nodePath
+        : getParentDirectoryPath(explorerContextMenu.nodePath);
+    setExplorerContextMenu(null);
+    openUploadFilesPicker(targetParent);
+  };
+
+  const handleExplorerUploadFolderAction = () => {
+    if (!explorerContextMenu) return;
+    const targetParent =
+      explorerContextMenu.nodeType === "directory"
+        ? explorerContextMenu.nodePath
+        : getParentDirectoryPath(explorerContextMenu.nodePath);
+    setExplorerContextMenu(null);
+    openUploadFolderPicker(targetParent);
+  };
+
+  const handleSubmitExplorerEntryDialog = async () => {
+    if (!activeUser || !selectedBook || !explorerEntryDialog) return;
+    const name = explorerEntryNameInput.trim();
+    if (!name) {
+      setNotice({ tone: "error", text: "Name cannot be empty." });
+      return;
+    }
+
+    const dialog = explorerEntryDialog;
+    setExplorerEntryDialog(null);
 
     try {
+      if (dialog.mode === "create-file") {
+        const created = await window.fastChapter.createProjectFile({
+          username: activeUser,
+          bookId: selectedBook.id,
+          parentRelativePath: dialog.parentRelativePath || "",
+          name
+        });
+
+        await refreshWorkspaceData(activeUser, selectedBook.id, true);
+        await refreshBooks(activeUser);
+        if (isEditableFile(created.path)) {
+          setSelectedPath(created.path);
+        }
+        setNotice({ tone: "success", text: `Created ${created.path}` });
+        return;
+      }
+
+      if (dialog.mode === "create-folder") {
+        const created = await window.fastChapter.createProjectDirectory({
+          username: activeUser,
+          bookId: selectedBook.id,
+          parentRelativePath: dialog.parentRelativePath || "",
+          name
+        });
+
+        await refreshWorkspaceData(activeUser, selectedBook.id, true);
+        await refreshBooks(activeUser);
+        setNotice({ tone: "success", text: `Created folder ${created.path}` });
+        return;
+      }
+
+      const previousPath = dialog.targetPath || "";
+      if (!previousPath) {
+        setNotice({ tone: "error", text: "Missing target path to rename." });
+        return;
+      }
+
       const renamed = await window.fastChapter.renameProjectEntry({
         username: activeUser,
         bookId: selectedBook.id,
         relativePath: previousPath,
-        nextName
+        nextName: name
       });
 
-      if (selectedPath) {
-        if (selectedPath === previousPath) {
-          setSelectedPath(renamed.path);
-        } else if (
-          previousType === "directory" &&
-          selectedPath.startsWith(`${previousPath}/`)
-        ) {
-          setSelectedPath(`${renamed.path}${selectedPath.slice(previousPath.length)}`);
-        }
-      }
-
+      remapSelectedPathAfterPathChange(previousPath, renamed.path, dialog.targetType || "file");
       await refreshWorkspaceData(activeUser, selectedBook.id, true);
       await refreshBooks(activeUser);
       setNotice({ tone: "success", text: `Renamed to ${renamed.path}` });
@@ -758,7 +917,6 @@ export default function App() {
     const targetPath = explorerContextMenu.nodePath;
     const targetType = explorerContextMenu.nodeType;
     const targetName = explorerContextMenu.nodeName;
-
     setExplorerContextMenu(null);
 
     if (!shouldDelete) return;
@@ -776,11 +934,271 @@ export default function App() {
 
       await refreshWorkspaceData(activeUser, selectedBook.id, !selectionWasDeleted);
       await refreshBooks(activeUser);
-
       setNotice({ tone: "success", text: `Deleted ${targetName}` });
     } catch (error) {
       setNotice({ tone: "error", text: String(error) });
     }
+  };
+
+  const readFileAsBase64 = (file: File) =>
+    new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(reader.error || new Error("Failed reading file."));
+      reader.onload = () => {
+        const value = typeof reader.result === "string" ? reader.result : "";
+        const commaIndex = value.indexOf(",");
+        resolve(commaIndex >= 0 ? value.slice(commaIndex + 1) : value);
+      };
+      reader.readAsDataURL(file);
+    });
+
+  const uploadCandidatesToProject = async (candidates: UploadCandidate[], targetParentRelativePath = "") => {
+    if (!activeUser || !selectedBook) return;
+    if (candidates.length === 0) return;
+
+    try {
+      setIsBusy(true);
+      const normalizedTargetParent = normalizeRelativePath(targetParentRelativePath);
+
+      for (const candidate of candidates) {
+        const relativePath = joinRelativePath(normalizedTargetParent, candidate.relativePath);
+        if (!relativePath) continue;
+        const base64Content = await readFileAsBase64(candidate.file);
+        await window.fastChapter.writeProjectBinaryFile({
+          username: activeUser,
+          bookId: selectedBook.id,
+          relativePath,
+          base64Content
+        });
+      }
+
+      await refreshWorkspaceData(activeUser, selectedBook.id, true);
+      await refreshBooks(activeUser);
+      setNotice({
+        tone: "success",
+        text: `Uploaded ${candidates.length} item${candidates.length === 1 ? "" : "s"}.`
+      });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleUploadFilesInputChange = (event: ReactChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    event.currentTarget.value = "";
+    if (files.length === 0) return;
+    const candidates: UploadCandidate[] = files.map((file) => ({
+      relativePath: file.name,
+      file
+    }));
+    void uploadCandidatesToProject(candidates, uploadTargetPathRef.current);
+  };
+
+  const handleUploadFolderInputChange = (event: ReactChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    event.currentTarget.value = "";
+    if (files.length === 0) return;
+    const candidates: UploadCandidate[] = files.map((file) => {
+      const withRelative = file as File & { webkitRelativePath?: string };
+      return {
+        relativePath: normalizeRelativePath(withRelative.webkitRelativePath || file.name),
+        file
+      };
+    });
+    void uploadCandidatesToProject(candidates, uploadTargetPathRef.current);
+  };
+
+  const collectDroppedCandidates = async (dataTransfer: DataTransfer) => {
+    const items = Array.from(dataTransfer.items || []);
+    const output: UploadCandidate[] = [];
+    let consumedEntries = false;
+
+    const walkEntry = async (entry: any, parentRelativePath: string) => {
+      if (entry?.isFile) {
+        const file = await new Promise<File>((resolve, reject) => entry.file(resolve, reject));
+        output.push({
+          relativePath: joinRelativePath(parentRelativePath, entry.name || file.name),
+          file
+        });
+        return;
+      }
+
+      if (!entry?.isDirectory) return;
+
+      const folderRelativePath = joinRelativePath(parentRelativePath, entry.name);
+      const reader = entry.createReader();
+
+      while (true) {
+        const children: any[] = await new Promise((resolve, reject) => reader.readEntries(resolve, reject));
+        if (children.length === 0) break;
+
+        for (const child of children) {
+          await walkEntry(child, folderRelativePath);
+        }
+      }
+    };
+
+    for (const item of items) {
+      const maybeEntry = (item as DataTransferItem & { webkitGetAsEntry?: () => any }).webkitGetAsEntry?.();
+      if (!maybeEntry) continue;
+      consumedEntries = true;
+      await walkEntry(maybeEntry, "");
+    }
+
+    if (!consumedEntries) {
+      const fallbackFiles = Array.from(dataTransfer.files || []);
+      fallbackFiles.forEach((file) => {
+        const withRelative = file as File & { webkitRelativePath?: string };
+        output.push({
+          relativePath: normalizeRelativePath(withRelative.webkitRelativePath || file.name),
+          file
+        });
+      });
+    }
+
+    return output;
+  };
+
+  const canMoveToDirectory = (dragState: ExplorerDragState, targetDirectoryPath: string) => {
+    const sourceParentPath = getParentDirectoryPath(dragState.path);
+    if (sourceParentPath === targetDirectoryPath) return false;
+    if (dragState.type === "directory") {
+      if (targetDirectoryPath === dragState.path) return false;
+      if (targetDirectoryPath.startsWith(`${dragState.path}/`)) return false;
+    }
+    return true;
+  };
+
+  const handleMoveExplorerEntry = async (targetDirectoryPath: string) => {
+    if (!activeUser || !selectedBook || !draggedExplorerNode) return;
+    const dragState = draggedExplorerNode;
+    const normalizedTargetDirectory = normalizeRelativePath(targetDirectoryPath);
+
+    if (!canMoveToDirectory(dragState, normalizedTargetDirectory)) {
+      setDraggedExplorerNode(null);
+      setExplorerDropTargetDirectory(null);
+      return;
+    }
+
+    try {
+      const moved = await window.fastChapter.moveProjectEntry({
+        username: activeUser,
+        bookId: selectedBook.id,
+        relativePath: dragState.path,
+        targetParentRelativePath: normalizedTargetDirectory
+      });
+      remapSelectedPathAfterPathChange(dragState.path, moved.path, dragState.type);
+      await refreshWorkspaceData(activeUser, selectedBook.id, true);
+      await refreshBooks(activeUser);
+      setNotice({ tone: "success", text: `Moved to ${moved.path}` });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setDraggedExplorerNode(null);
+      setExplorerDropTargetDirectory(null);
+    }
+  };
+
+  const handleExplorerNodeDragStart = (event: ReactDragEvent<HTMLButtonElement>, node: FileNode) => {
+    setDraggedExplorerNode({ path: node.path, type: node.type });
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", node.path);
+  };
+
+  const handleExplorerNodeDragEnd = () => {
+    setDraggedExplorerNode(null);
+    setExplorerDropTargetDirectory(null);
+    setIsExplorerDropZoneActive(false);
+  };
+
+  const handleExplorerNodeDragOver = (event: ReactDragEvent<HTMLButtonElement>, node: FileNode) => {
+    const types = Array.from(event.dataTransfer.types || []);
+    const hasExternalFiles = types.includes("Files");
+
+    if (draggedExplorerNode) {
+      const targetDirectoryPath = node.type === "directory" ? node.path : getParentDirectoryPath(node.path);
+      if (!canMoveToDirectory(draggedExplorerNode, targetDirectoryPath)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "move";
+      setExplorerDropTargetDirectory(targetDirectoryPath);
+      setIsExplorerDropZoneActive(false);
+      return;
+    }
+
+    if (hasExternalFiles) {
+      const targetDirectoryPath = node.type === "directory" ? node.path : getParentDirectoryPath(node.path);
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "copy";
+      setExplorerDropTargetDirectory(targetDirectoryPath);
+      setIsExplorerDropZoneActive(true);
+    }
+  };
+
+  const handleUploadFromDataTransfer = async (dataTransfer: DataTransfer, targetDirectoryPath: string) => {
+    const candidates = await collectDroppedCandidates(dataTransfer);
+    if (candidates.length === 0) return;
+    await uploadCandidatesToProject(candidates, targetDirectoryPath);
+  };
+
+  const handleExplorerNodeDrop = (event: ReactDragEvent<HTMLButtonElement>, node: FileNode) => {
+    const targetDirectoryPath = node.type === "directory" ? node.path : getParentDirectoryPath(node.path);
+    event.preventDefault();
+    event.stopPropagation();
+    setIsExplorerDropZoneActive(false);
+
+    if (draggedExplorerNode) {
+      void handleMoveExplorerEntry(targetDirectoryPath);
+      return;
+    }
+
+    void handleUploadFromDataTransfer(event.dataTransfer, targetDirectoryPath).finally(() => {
+      setExplorerDropTargetDirectory(null);
+    });
+  };
+
+  const handleExplorerContainerDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
+    const types = Array.from(event.dataTransfer.types || []);
+    const hasExternalFiles = types.includes("Files");
+    if (!draggedExplorerNode && !hasExternalFiles) return;
+
+    event.preventDefault();
+
+    if (draggedExplorerNode) {
+      if (!canMoveToDirectory(draggedExplorerNode, "")) return;
+      event.dataTransfer.dropEffect = "move";
+      setExplorerDropTargetDirectory("");
+      return;
+    }
+
+    event.dataTransfer.dropEffect = "copy";
+    setIsExplorerDropZoneActive(true);
+    setExplorerDropTargetDirectory("");
+  };
+
+  const handleExplorerContainerDragLeave = (event: ReactDragEvent<HTMLDivElement>) => {
+    const nextTarget = event.relatedTarget as Node | null;
+    if (nextTarget && event.currentTarget.contains(nextTarget)) return;
+    if (!draggedExplorerNode) {
+      setExplorerDropTargetDirectory(null);
+    }
+    setIsExplorerDropZoneActive(false);
+  };
+
+  const handleExplorerContainerDrop = (event: ReactDragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsExplorerDropZoneActive(false);
+    if (draggedExplorerNode) {
+      void handleMoveExplorerEntry("");
+      return;
+    }
+
+    void handleUploadFromDataTransfer(event.dataTransfer, "").finally(() => {
+      setExplorerDropTargetDirectory(null);
+    });
   };
 
   const handleStartCapture = async () => {
@@ -1358,11 +1776,29 @@ export default function App() {
         <div className="flex h-full min-h-0 flex-col bg-card/30">
           <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2.5">
             <h2 className="text-sm font-semibold tracking-tight">Project Navigator</h2>
-            <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCreateChapter}>
-              <Plus className="h-4 w-4" />
-            </Button>
+            <div className="flex items-center gap-1">
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={handleCreateChapter} title="Create Chapter">
+                <Plus className="h-4 w-4" />
+              </Button>
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openUploadFilesPicker("")} title="Upload Files">
+                <Upload className="h-4 w-4" />
+              </Button>
+              <Button variant="ghost" size="icon" className="h-6 w-6" onClick={() => openUploadFolderPicker("")} title="Upload Folder">
+                <FolderPlus className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
-          <div className="flex-1 overflow-auto" onContextMenu={openExplorerRootContextMenu}>
+          <div
+            className={`flex-1 overflow-auto ${
+              isExplorerDropZoneActive || (draggedExplorerNode && explorerDropTargetDirectory === "")
+                ? "bg-primary/5 ring-inset ring-1 ring-primary/60"
+                : ""
+            }`}
+            onContextMenu={openExplorerRootContextMenu}
+            onDragOver={handleExplorerContainerDragOver}
+            onDragLeave={handleExplorerContainerDragLeave}
+            onDrop={handleExplorerContainerDrop}
+          >
             <div className="p-2 space-y-0.5">
               {renderTree(
                 tree,
@@ -1373,7 +1809,13 @@ export default function App() {
                 (filePath) => {
                   setSelectedPath(filePath);
                 },
-                openExplorerContextMenu
+                openExplorerContextMenu,
+                draggedExplorerNode,
+                explorerDropTargetDirectory,
+                handleExplorerNodeDragStart,
+                handleExplorerNodeDragEnd,
+                handleExplorerNodeDragOver,
+                handleExplorerNodeDrop
               )}
             </div>
           </div>
@@ -1595,7 +2037,7 @@ export default function App() {
         <div
           ref={explorerMenuRef}
           className="fixed z-[90] min-w-[180px] rounded-md border border-border/80 bg-card/95 p-1 shadow-xl backdrop-blur"
-          style={{ left: explorerContextMenu.x, top: explorerContextMenu.y }}
+          style={{ left: explorerContextMenuPosition.left, top: explorerContextMenuPosition.top }}
         >
           <button
             type="button"
@@ -1610,6 +2052,21 @@ export default function App() {
             onClick={() => handleExplorerCreateEntry("directory")}
           >
             New folder
+          </button>
+          <div className="my-1 h-px bg-border/80" />
+          <button
+            type="button"
+            className="flex w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+            onClick={handleExplorerUploadFilesAction}
+          >
+            Upload files
+          </button>
+          <button
+            type="button"
+            className="flex w-full rounded px-2 py-1.5 text-left text-xs hover:bg-accent"
+            onClick={handleExplorerUploadFolderAction}
+          >
+            Upload folder
           </button>
 
           {explorerContextMenu.nodePath && (
@@ -1633,6 +2090,65 @@ export default function App() {
           )}
         </div>
       )}
+
+      <input
+        ref={uploadFilesInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleUploadFilesInputChange}
+      />
+      <input
+        ref={uploadFolderInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleUploadFolderInputChange}
+        {...folderUploadInputProps}
+      />
+
+      <Dialog
+        open={Boolean(explorerEntryDialog)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setExplorerEntryDialog(null);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {explorerEntryDialog?.mode === "rename"
+                ? "Rename Entry"
+                : explorerEntryDialog?.mode === "create-file"
+                  ? "Create File"
+                  : "Create Folder"}
+            </DialogTitle>
+            <DialogDescription>
+              {explorerEntryDialog?.mode === "rename"
+                ? "Choose a new name for the selected item."
+                : "Enter a name for the new explorer item."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label htmlFor="explorer-entry-name">Name</Label>
+            <Input
+              id="explorer-entry-name"
+              value={explorerEntryNameInput}
+              onChange={(event) => setExplorerEntryNameInput(event.target.value)}
+              placeholder={explorerEntryDialog?.initialName || "name"}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setExplorerEntryDialog(null)}>
+              Cancel
+            </Button>
+            <Button onClick={handleSubmitExplorerEntryDialog}>
+              Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={isRecordingDialogOpen}

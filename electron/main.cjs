@@ -938,6 +938,76 @@ async function deleteProjectEntry(username, bookId, relativePath) {
   return { ok: true };
 }
 
+async function writeProjectBinaryFile(username, bookId, relativePath, base64Content) {
+  const bookRoot = getBookRoot(username, bookId);
+  const absolutePath = resolveInside(bookRoot, relativePath);
+  const parentPath = path.dirname(absolutePath);
+
+  await fs.mkdir(parentPath, { recursive: true });
+
+  const cleanedBase64 = String(base64Content || "").replace(/^data:.*;base64,/, "");
+  const buffer = Buffer.from(cleanedBase64, "base64");
+  await fs.writeFile(absolutePath, buffer);
+
+  await refreshMainTeX(bookRoot);
+  await touchBook(username, bookId);
+
+  return {
+    ok: true,
+    path: toProjectRelativePath(bookRoot, absolutePath)
+  };
+}
+
+async function moveProjectEntry(username, bookId, relativePath, targetParentRelativePath) {
+  const bookRoot = getBookRoot(username, bookId);
+  const sourceAbsolutePath = resolveInside(bookRoot, relativePath);
+  const sourceRelativePath = toProjectRelativePath(bookRoot, sourceAbsolutePath);
+
+  if (!sourceRelativePath) {
+    throw new Error("Project root cannot be moved.");
+  }
+
+  const targetParentAbsolutePath = resolveInside(bookRoot, String(targetParentRelativePath || "").trim() || ".");
+  const targetParentStats = await fs.stat(targetParentAbsolutePath);
+
+  if (!targetParentStats.isDirectory()) {
+    throw new Error("Drop target is not a directory.");
+  }
+
+  const sourceStats = await fs.stat(sourceAbsolutePath);
+  const targetParentRelative = toProjectRelativePath(bookRoot, targetParentAbsolutePath);
+
+  if (
+    sourceStats.isDirectory() &&
+    targetParentRelative &&
+    (targetParentRelative === sourceRelativePath || targetParentRelative.startsWith(`${sourceRelativePath}/`))
+  ) {
+    throw new Error("A folder cannot be moved inside itself.");
+  }
+
+  const destinationRelativePath = targetParentRelative
+    ? `${targetParentRelative}/${path.basename(sourceAbsolutePath)}`
+    : path.basename(sourceAbsolutePath);
+  const destinationAbsolutePath = resolveInside(bookRoot, destinationRelativePath);
+
+  if (destinationAbsolutePath === sourceAbsolutePath) {
+    return { ok: true, path: sourceRelativePath };
+  }
+
+  if (await fileExists(destinationAbsolutePath)) {
+    throw new Error("Destination already contains an item with the same name.");
+  }
+
+  await fs.rename(sourceAbsolutePath, destinationAbsolutePath);
+  await refreshMainTeX(bookRoot);
+  await touchBook(username, bookId);
+
+  return {
+    ok: true,
+    path: toProjectRelativePath(bookRoot, destinationAbsolutePath)
+  };
+}
+
 function mimeToExt(mimeType) {
   if (!mimeType) return "webm";
   if (mimeType.includes("wav")) return "wav";
@@ -1396,6 +1466,14 @@ function registerIpcHandlers() {
   ipcMain.handle("book:deleteProjectEntry", async (_event, payload) => {
     const { username, bookId, relativePath } = payload;
     return deleteProjectEntry(normalizeUserName(username), bookId, relativePath);
+  });
+  ipcMain.handle("book:writeBinaryFile", async (_event, payload) => {
+    const { username, bookId, relativePath, base64Content } = payload;
+    return writeProjectBinaryFile(normalizeUserName(username), bookId, relativePath, base64Content);
+  });
+  ipcMain.handle("book:moveProjectEntry", async (_event, payload) => {
+    const { username, bookId, relativePath, targetParentRelativePath } = payload;
+    return moveProjectEntry(normalizeUserName(username), bookId, relativePath, targetParentRelativePath);
   });
   ipcMain.handle("book:saveRecording", async (_event, payload) => {
     return saveRecording({ ...payload, username: normalizeUserName(payload.username) });
