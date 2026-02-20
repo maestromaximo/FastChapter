@@ -23,6 +23,8 @@ Build and iterate on **Fast Chapter**, an Electron desktop app for voice-first b
 ```bash
 npm install
 npm run dev
+npm run dev:ui
+npm run dev:electron
 npm run build
 npm run start
 ```
@@ -35,7 +37,7 @@ Notes:
 
 - `electron/main.cjs`
   - Creates BrowserWindow
-  - Handles IPC for users/books/files/recordings/profile
+  - Handles IPC for users/books/files/recordings/profile/navigation actions
   - Owns local filesystem scaffolding
   - Owns OpenAI transcription job orchestration
 - `electron/preload.cjs`
@@ -62,6 +64,15 @@ When creating a new book, ensure these artifacts exist:
 
 `main.tex` should be the project entry file and include cover page, table of contents, chapter includes, and back page.
 
+Recording and transcription outputs should be organized by type:
+
+- `recordings/initial-outline/`
+- `recordings/chapters/chapter-N/`
+- `recordings/miscellaneous/`
+- `transcriptions/initial-outline/`
+- `transcriptions/chapters/chapter-N/`
+- `transcriptions/miscellaneous/`
+
 ## UI/UX Guardrails
 
 - Preserve the existing dark/light theme behavior.
@@ -82,10 +93,18 @@ When creating a new book, ensure these artifacts exist:
 - Use TypeScript types for IPC payloads and responses.
 - Prefer small, targeted changes over broad refactors.
 - Keep file writes deterministic and idempotent where possible.
+- Preserve secure path handling for project file operations (no escaping project root).
 - Do not break existing `window.fastChapter` contract without updating:
   - `electron/preload.cjs`
   - `src/types/global.d.ts`
   - renderer usage in `src/App.tsx`
+
+When adding or changing IPC channels:
+
+- Register the handler in `electron/main.cjs`.
+- Expose it in `electron/preload.cjs`.
+- Update `src/types/global.d.ts`.
+- Update renderer call sites in `src/App.tsx`.
 
 ## Validation Checklist
 
@@ -97,6 +116,12 @@ Before finishing changes:
 4. Workspace file open/save still functions.
 5. Profile settings (theme + API key actions) still function.
 6. Recording save and transcription job list still render correctly.
+7. Explorer actions still function (create/rename/delete/move/upload, including multi-select bulk delete/move).
+
+## Scoped Guides
+
+- `electron/AGENTS.md` for Electron main/preload IPC and filesystem rules.
+- `src/AGENTS.md` for renderer/UI behavior and interaction guardrails.
 
 If local build tools cannot run in current shell, state that clearly and describe what still needs manual verification.
 

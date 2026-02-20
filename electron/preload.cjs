@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld("fastChapter", {
   getBookTree: (payload) => ipcRenderer.invoke("book:getTree", payload),
   createChapter: (payload) => ipcRenderer.invoke("book:createChapter", payload),
   readProjectFile: (payload) => ipcRenderer.invoke("book:readFile", payload),
+  readProjectMediaDataUrl: (payload) => ipcRenderer.invoke("book:readMediaDataUrl", payload),
   writeProjectFile: (payload) => ipcRenderer.invoke("book:writeFile", payload),
   createProjectFile: (payload) => ipcRenderer.invoke("book:createProjectFile", payload),
   createProjectDirectory: (payload) => ipcRenderer.invoke("book:createProjectDirectory", payload),

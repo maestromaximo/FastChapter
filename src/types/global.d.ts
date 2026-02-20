@@ -32,6 +32,11 @@ declare global {
       getBookTree: (payload: { username: string; bookId: string }) => Promise<FileNode[]>;
       createChapter: (payload: { username: string; bookId: string }) => Promise<{ chapterIndex: number; chapterPath: string }>;
       readProjectFile: (payload: { username: string; bookId: string; relativePath: string }) => Promise<string>;
+      readProjectMediaDataUrl: (payload: {
+        username: string;
+        bookId: string;
+        relativePath: string;
+      }) => Promise<string>;
       writeProjectFile: (payload: {
         username: string;
         bookId: string;

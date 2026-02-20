@@ -797,6 +797,11 @@ function isLikelyTextFile(filePath) {
   return [".tex", ".txt", ".md", ".json", ".yaml", ".yml"].includes(ext);
 }
 
+function isLikelyAudioFile(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  return [".wav", ".mp3", ".mp4", ".m4a", ".ogg", ".webm", ".flac", ".mpeg", ".mpga"].includes(ext);
+}
+
 async function readProjectFile(username, bookId, relativePath) {
   const bookRoot = getBookRoot(username, bookId);
   const absolutePath = resolveInside(bookRoot, relativePath);
@@ -806,6 +811,19 @@ async function readProjectFile(username, bookId, relativePath) {
   }
 
   return fs.readFile(absolutePath, "utf8");
+}
+
+async function readProjectMediaDataUrl(username, bookId, relativePath) {
+  const bookRoot = getBookRoot(username, bookId);
+  const absolutePath = resolveInside(bookRoot, relativePath);
+
+  if (!isLikelyAudioFile(absolutePath)) {
+    throw new Error("Only audio previews are supported in this prototype.");
+  }
+
+  const buffer = await fs.readFile(absolutePath);
+  const mimeType = extToMime(absolutePath);
+  return `data:${mimeType};base64,${buffer.toString("base64")}`;
 }
 
 async function writeProjectFile(username, bookId, relativePath, content) {
@@ -1036,6 +1054,48 @@ function buildTranscriptionJobCacheKey(username, bookId, jobId) {
 
 function getTranscriptionMetaPath(bookRoot, baseName) {
   return path.join(bookRoot, "transcriptions", `${baseName}.meta.json`);
+}
+
+function resolveRecordingSubdirectory(kind, chapterIndex) {
+  if (kind === "initial-outline") {
+    return "initial-outline";
+  }
+
+  if (kind === "chapter-recording") {
+    const chapterNumber =
+      Number.isFinite(chapterIndex) && Number(chapterIndex) > 0 ? Number(chapterIndex) : 1;
+    return path.join("chapters", `chapter-${chapterNumber}`);
+  }
+
+  if (kind === "loose-note") {
+    return "miscellaneous";
+  }
+
+  return "miscellaneous";
+}
+
+async function listFilesRecursive(rootDir, relativePrefix = "") {
+  const entries = await fs.readdir(rootDir, { withFileTypes: true });
+  const output = [];
+
+  for (const entry of entries) {
+    const absolutePath = path.join(rootDir, entry.name);
+    const relativePath = relativePrefix
+      ? path.join(relativePrefix, entry.name)
+      : entry.name;
+
+    if (entry.isDirectory()) {
+      const nested = await listFilesRecursive(absolutePath, relativePath);
+      output.push(...nested);
+      continue;
+    }
+
+    if (entry.isFile()) {
+      output.push({ absolutePath, relativePath: relativePath.replaceAll(path.sep, "/") });
+    }
+  }
+
+  return output;
 }
 
 function toPublicTranscriptionJob(job) {
@@ -1309,11 +1369,13 @@ async function saveRecording(payload) {
     .replace(/-+/g, "-");
   const chapterLabel = chapterIndex ? `-chapter-${chapterIndex}` : "";
   const baseName = `${timestamp}-${safeKind}${chapterLabel}`;
+  const recordingSubdirectory = resolveRecordingSubdirectory(safeKind, chapterIndex);
 
   const hasAudioBlob = Boolean(audioBase64);
   const audioExt = mimeToExt(mimeType);
   const recordingFile = hasAudioBlob ? `${baseName}.${audioExt}` : `${baseName}.txt`;
-  const recordingAbsolutePath = path.join(recordingsRoot, recordingFile);
+  const recordingAbsolutePath = path.join(recordingsRoot, recordingSubdirectory, recordingFile);
+  await ensureDir(path.dirname(recordingAbsolutePath));
 
   if (hasAudioBlob) {
     const cleaned = String(audioBase64).replace(/^data:.*;base64,/, "");
@@ -1328,7 +1390,8 @@ async function saveRecording(payload) {
   }
 
   const transcriptionFile = `${baseName}.txt`;
-  const transcriptionAbsolutePath = path.join(transcriptionsRoot, transcriptionFile);
+  const transcriptionAbsolutePath = path.join(transcriptionsRoot, recordingSubdirectory, transcriptionFile);
+  await ensureDir(path.dirname(transcriptionAbsolutePath));
 
   const transcriptText = String(transcript || "").trim();
   const baseTranscriptionText = transcriptText
@@ -1375,28 +1438,28 @@ async function listRecordings(username, bookId) {
   await ensureDir(recordingsRoot);
   await ensureDir(transcriptionsRoot);
 
-  const recordingEntries = await fs.readdir(recordingsRoot, { withFileTypes: true });
-  const transcriptionEntries = await fs.readdir(transcriptionsRoot, { withFileTypes: true });
+  const recordingEntries = await listFilesRecursive(recordingsRoot);
+  const transcriptionEntries = await listFilesRecursive(transcriptionsRoot);
 
   const recordings = recordingEntries
-    .filter((entry) => entry.isFile())
     .map((entry) => {
-      const parts = entry.name.split("-");
+      const baseName = path.basename(entry.relativePath);
+      const parts = baseName.split("-");
       const maybeTime = Number(parts[0]);
       const date = Number.isFinite(maybeTime) ? new Date(maybeTime).toISOString() : null;
       return {
-        fileName: entry.name,
-        path: `recordings/${entry.name}`,
+        fileName: entry.relativePath,
+        path: `recordings/${entry.relativePath}`,
         createdAt: date
       };
     })
     .sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 
   const transcriptions = transcriptionEntries
-    .filter((entry) => entry.isFile() && !entry.name.endsWith(".meta.json"))
+    .filter((entry) => !entry.relativePath.endsWith(".meta.json"))
     .map((entry) => ({
-      fileName: entry.name,
-      path: `transcriptions/${entry.name}`
+      fileName: entry.relativePath,
+      path: `transcriptions/${entry.relativePath}`
     }))
     .sort((a, b) => b.fileName.localeCompare(a.fileName));
 
@@ -1446,6 +1509,10 @@ function registerIpcHandlers() {
   ipcMain.handle("book:readFile", async (_event, payload) => {
     const { username, bookId, relativePath } = payload;
     return readProjectFile(normalizeUserName(username), bookId, relativePath);
+  });
+  ipcMain.handle("book:readMediaDataUrl", async (_event, payload) => {
+    const { username, bookId, relativePath } = payload;
+    return readProjectMediaDataUrl(normalizeUserName(username), bookId, relativePath);
   });
   ipcMain.handle("book:writeFile", async (_event, payload) => {
     const { username, bookId, relativePath, content } = payload;
@@ -1497,6 +1564,12 @@ function registerIpcHandlers() {
 }
 
 function createWindow() {
+  const appIconPath = path.join(__dirname, "..", "logo.png");
+
+  if (process.platform === "darwin" && app.dock?.setIcon) {
+    app.dock.setIcon(appIconPath);
+  }
+
   const win = new BrowserWindow({
     width: 1560,
     height: 980,
@@ -1504,6 +1577,7 @@ function createWindow() {
     minHeight: 760,
     backgroundColor: "#08131f",
     title: "Fast Chapter",
+    icon: appIconPath,
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
