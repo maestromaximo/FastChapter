@@ -352,10 +352,12 @@ async function fileExists(filePath) {
 
 async function runCommand(command, args, cwd, timeoutMs = LATEX_COMPILE_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
+    const needsWindowsShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(String(command || ""));
     const child = spawn(command, args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true
+      windowsHide: true,
+      shell: needsWindowsShell
     });
 
     let stdout = "";
@@ -399,6 +401,29 @@ async function runCommand(command, args, cwd, timeoutMs = LATEX_COMPILE_TIMEOUT_
       });
     });
   });
+}
+
+function getCodexCommandCandidates() {
+  return process.platform === "win32" ? ["codex", "codex.cmd"] : ["codex"];
+}
+
+async function resolveCodexCommand() {
+  const candidates = getCodexCommandCandidates();
+  let lastError = null;
+
+  for (const candidate of candidates) {
+    try {
+      const result = await runCommand(candidate, ["--version"], process.cwd(), 15000);
+      if (result.code === 0) {
+        return { command: candidate, versionResult: result };
+      }
+      lastError = new Error(trimLogTail(result.stderr || result.stdout || `${candidate} --version failed.`));
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error("Codex CLI is not installed or not available on PATH.");
 }
 
 async function detectLatexCompiler() {
@@ -1682,9 +1707,9 @@ async function checkCodexAvailability() {
   const checkedAt = new Date().toISOString();
 
   try {
-    const versionResult = await runCommand("codex", ["--version"], process.cwd(), 15000);
-    const helpResult = await runCommand("codex", ["--help"], process.cwd(), 15000);
-    const loginStatusResult = await runCommand("codex", ["login", "status"], process.cwd(), 15000);
+    const { command: codexCommand, versionResult } = await resolveCodexCommand();
+    const helpResult = await runCommand(codexCommand, ["--help"], process.cwd(), 15000);
+    const loginStatusResult = await runCommand(codexCommand, ["login", "status"], process.cwd(), 15000);
 
     if (versionResult.code !== 0) {
       return {
@@ -1706,6 +1731,7 @@ async function checkCodexAvailability() {
       checkedAt,
       installed: true,
       authenticated,
+      command: codexCommand,
       version: sanitizeLogLine(versionResult.stdout || versionResult.stderr).trim() || null,
       helpPreview: sanitizeLogLine(helpResult.stdout || helpResult.stderr)
         .split("\n")
@@ -2031,6 +2057,7 @@ async function runWriteBookSession(session) {
       codexStatus.authenticated ? "success" : "info",
       `${codexStatus.version || "codex"}\n${codexStatus.loginStatus || ""}`.trim()
     );
+    const codexCommand = String(codexStatus.command || "codex").trim() || "codex";
 
     const profile = await readUserProfilePrivate(username);
     const apiKey = String(profile.integrations.openAIApiKey || "").trim();
@@ -2042,10 +2069,20 @@ async function runWriteBookSession(session) {
     }
 
     const { Codex } = await import("@openai/codex-sdk");
-    const codex = new Codex({
-      codexPathOverride: "codex",
+    const isWindowsCmdShim = process.platform === "win32" && /\.(cmd|bat)$/i.test(codexCommand);
+    const codexOptions = {
       apiKey: apiKey || undefined
-    });
+    };
+    if (!isWindowsCmdShim) {
+      codexOptions.codexPathOverride = codexCommand;
+    } else {
+      appendWriteBookLog(
+        session,
+        "info",
+        `Detected Windows shell shim (${codexCommand}); using Codex SDK default command resolution for runtime.`
+      );
+    }
+    const codex = new Codex(codexOptions);
 
     const thread = codex.startThread({
       sandboxMode: "workspace-write",
