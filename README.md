@@ -12,7 +12,7 @@ Fast Chapter is a desktop app concept for voice-first book drafting. This protot
 - Recording workflow with transcription placeholders
 - Profile settings with local OpenAI API key storage
 - Background OpenAI transcription jobs (`gpt-4o-transcribe`) with status tracking
-- `Write My Book` placeholder action for future Codex SDK integration
+- `Write Book` guided flow with Codex SDK session streaming
 
 ## Tech Stack
 
@@ -78,7 +78,6 @@ npm run start
 
 ## Next Integrations
 
-- Codex SDK writing orchestration from transcriptions
 - Book export (PDF + source bundle)
 
 ## LaTeX Preview

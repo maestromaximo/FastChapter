@@ -11,6 +11,7 @@ import {
   ArrowLeft,
   BookOpen,
   Check,
+  CircleAlert,
   ChevronDown,
   ChevronRight,
   FileText,
@@ -19,16 +20,20 @@ import {
   FolderOpen,
   KeyRound,
   LibraryBig,
+  ListChecks,
   Loader2,
   Mic,
   MicOff,
   MoonStar,
+  Play,
   Plus,
   RefreshCcw,
   Save,
   Settings,
+  Square,
   Sparkles,
   Sun,
+  TerminalSquare,
   Upload,
   UserCircle2,
   WandSparkles
@@ -50,7 +55,17 @@ import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import type { BookSummary, FileNode, LatexCompileResult, RecordingBundle, UserProfile } from "@/types/domain";
+import type {
+  BookSummary,
+  CodexAvailability,
+  FileNode,
+  LatexCompileResult,
+  RecordingBundle,
+  UserProfile,
+  WriteBookChecklist,
+  WriteBookSessionLogLine,
+  WriteBookSessionSnapshot
+} from "@/types/domain";
 
 type AppScreen = "auth" | "bookshelf" | "workspace" | "profile";
 
@@ -95,6 +110,8 @@ type CapturedAudio = {
   base64: string;
   mimeType: string;
 };
+
+type WriteBookDialogStep = "checklist" | "codex" | "confirm" | "running" | "complete";
 
 function isEditableFile(filePath: string) {
   return /\.(tex|txt|md|json|ya?ml)$/i.test(filePath);
@@ -368,6 +385,16 @@ export default function App() {
   const [recordingTranscript, setRecordingTranscript] = useState("");
   const [capturedAudio, setCapturedAudio] = useState<CapturedAudio | null>(null);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [isWriteBookDialogOpen, setIsWriteBookDialogOpen] = useState(false);
+  const [writeBookStep, setWriteBookStep] = useState<WriteBookDialogStep>("checklist");
+  const [writeBookChecklist, setWriteBookChecklist] = useState<WriteBookChecklist | null>(null);
+  const [isLoadingWriteBookChecklist, setIsLoadingWriteBookChecklist] = useState(false);
+  const [codexAvailability, setCodexAvailability] = useState<CodexAvailability | null>(null);
+  const [isCheckingCodexAvailability, setIsCheckingCodexAvailability] = useState(false);
+  const [isStartingWriteBookSession, setIsStartingWriteBookSession] = useState(false);
+  const [isCancellingWriteBookSession, setIsCancellingWriteBookSession] = useState(false);
+  const [writeBookSession, setWriteBookSession] = useState<WriteBookSessionSnapshot | null>(null);
+  const [writeBookSessionLogs, setWriteBookSessionLogs] = useState<WriteBookSessionLogLine[]>([]);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -379,6 +406,9 @@ export default function App() {
   const uploadTargetPathRef = useRef<string>("");
   const pendingCaptureResolveRef = useRef<((value: CapturedAudio | null) => void) | null>(null);
   const discardCapturedAudioOnStopRef = useRef(false);
+  const writeBookTerminalRef = useRef<HTMLDivElement | null>(null);
+  const writeBookSessionIdRef = useRef<string | null>(null);
+  const writeBookLogCursorRef = useRef(0);
 
   const chapterIndexes = useMemo(() => collectChapterIndexes(tree), [tree]);
   const explorerPathTypeMap = useMemo(() => buildPathTypeMap(tree), [tree]);
@@ -403,6 +433,8 @@ export default function App() {
     (job) => job.status === "queued" || job.status === "in_progress"
   );
   const failedJobs = recordingData.jobs.filter((job) => job.status === "failed");
+  const isWriteBookRunning =
+    writeBookSession?.status === "queued" || writeBookSession?.status === "running";
   const folderUploadInputProps = { webkitdirectory: "", directory: "" } as any;
 
   const refreshBooks = async (username: string) => {
@@ -606,6 +638,7 @@ export default function App() {
     setIsExplorerDropZoneActive(false);
     setSelectedExplorerPaths([]);
     setExplorerSelectionAnchorPath(null);
+    setIsWriteBookDialogOpen(false);
   }, [screen]);
 
   useEffect(() => {
@@ -674,6 +707,29 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [screen]);
+
+  useEffect(() => {
+    if (!isWriteBookDialogOpen) return;
+    if (!writeBookSessionIdRef.current) return;
+    if (writeBookSession && !["queued", "running"].includes(writeBookSession.status)) return;
+
+    const tick = () => {
+      pollWriteBookSession().catch(() => {
+        // Errors are surfaced in notice from pollWriteBookSession.
+      });
+    };
+
+    tick();
+    const interval = window.setInterval(tick, 1200);
+    return () => window.clearInterval(interval);
+  }, [isWriteBookDialogOpen, writeBookSession?.status]);
+
+  useEffect(() => {
+    if (!isWriteBookDialogOpen) return;
+    const container = writeBookTerminalRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+  }, [isWriteBookDialogOpen, writeBookSessionLogs.length, writeBookStep]);
 
   const handleLocalAccount = async () => {
     const username = usernameInput.trim();
@@ -1610,15 +1666,145 @@ export default function App() {
     });
   };
 
-  const handleWriteMyBook = async () => {
+  const resetWriteBookFlowState = () => {
+    setWriteBookStep("checklist");
+    setWriteBookChecklist(null);
+    setCodexAvailability(null);
+    setWriteBookSession(null);
+    setWriteBookSessionLogs([]);
+    writeBookSessionIdRef.current = null;
+    writeBookLogCursorRef.current = 0;
+  };
+
+  const loadWriteBookChecklist = async () => {
     if (!activeUser || !selectedBook) return;
 
     try {
-      const result = await window.fastChapter.writeMyBook({ username: activeUser, bookId: selectedBook.id });
-      setNotice({ tone: "success", text: `${result.status.toUpperCase()}: ${result.message}` });
+      setIsLoadingWriteBookChecklist(true);
+      const checklist = await window.fastChapter.getWriteBookChecklist({
+        username: activeUser,
+        bookId: selectedBook.id
+      });
+      setWriteBookChecklist(checklist);
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setIsLoadingWriteBookChecklist(false);
+    }
+  };
+
+  const checkCodexAvailability = async () => {
+    try {
+      setIsCheckingCodexAvailability(true);
+      const result = await window.fastChapter.checkCodexAvailability();
+      setCodexAvailability(result);
+      if (result.installed) {
+        setNotice({
+          tone: result.authenticated ? "success" : "info",
+          text: result.message
+        });
+      } else {
+        setNotice({ tone: "error", text: result.message });
+      }
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setIsCheckingCodexAvailability(false);
+    }
+  };
+
+  const pollWriteBookSession = async (sessionIdOverride?: string) => {
+    const sessionId = sessionIdOverride || writeBookSessionIdRef.current;
+    if (!sessionId) return;
+
+    try {
+      const snapshot = await window.fastChapter.getWriteBookSession({
+        sessionId,
+        afterLogIndex: writeBookLogCursorRef.current
+      });
+
+      setWriteBookSession(snapshot);
+      writeBookSessionIdRef.current = snapshot.sessionId;
+      writeBookLogCursorRef.current = snapshot.nextLogIndex;
+      if (snapshot.logs.length > 0) {
+        setWriteBookSessionLogs((current) => [...current, ...snapshot.logs]);
+      }
+
+      if (
+        snapshot.status === "completed" ||
+        snapshot.status === "failed" ||
+        snapshot.status === "cancelled"
+      ) {
+        setWriteBookStep("complete");
+      } else {
+        setWriteBookStep("running");
+      }
     } catch (error) {
       setNotice({ tone: "error", text: String(error) });
     }
+  };
+
+  const handleOpenWriteBookDialog = () => {
+    if (!activeUser || !selectedBook) return;
+
+    if (isWriteBookRunning && writeBookSessionIdRef.current) {
+      setIsWriteBookDialogOpen(true);
+      setWriteBookStep("running");
+      void pollWriteBookSession(writeBookSessionIdRef.current);
+      return;
+    }
+
+    resetWriteBookFlowState();
+    setIsWriteBookDialogOpen(true);
+    void loadWriteBookChecklist();
+  };
+
+  const handleWriteBookNextFromChecklist = () => {
+    setWriteBookStep("codex");
+    void checkCodexAvailability();
+  };
+
+  const handleStartWriteBookSession = async () => {
+    if (!activeUser || !selectedBook) return;
+
+    try {
+      setIsStartingWriteBookSession(true);
+      const started = await window.fastChapter.startWriteBookSession({
+        username: activeUser,
+        bookId: selectedBook.id
+      });
+
+      writeBookSessionIdRef.current = started.sessionId;
+      writeBookLogCursorRef.current = 0;
+      setWriteBookSessionLogs([]);
+      setWriteBookStep("running");
+      await pollWriteBookSession(started.sessionId);
+      setNotice({ tone: "info", text: "Write Book session started." });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setIsStartingWriteBookSession(false);
+    }
+  };
+
+  const handleCancelWriteBookSession = async () => {
+    if (!writeBookSessionIdRef.current) return;
+
+    try {
+      setIsCancellingWriteBookSession(true);
+      await window.fastChapter.cancelWriteBookSession({
+        sessionId: writeBookSessionIdRef.current
+      });
+      setNotice({ tone: "info", text: "Cancellation requested for Write Book." });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setIsCancellingWriteBookSession(false);
+    }
+  };
+
+  const handleWriteMyBook = () => {
+    handleOpenWriteBookDialog();
   };
 
   const handleSaveApiKey = async () => {
@@ -2466,6 +2652,300 @@ export default function App() {
             <Button onClick={handleSubmitExplorerEntryDialog}>
               Save
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isWriteBookDialogOpen}
+        onOpenChange={(open) => {
+          setIsWriteBookDialogOpen(open);
+          if (!open && !isWriteBookRunning) {
+            resetWriteBookFlowState();
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <WandSparkles className="h-4 w-4" />
+              Write Book
+            </DialogTitle>
+            <DialogDescription>
+              Validate your project inputs, verify Codex availability, then run chapter-by-chapter generation in one thread.
+            </DialogDescription>
+          </DialogHeader>
+
+          {writeBookStep === "checklist" && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                <span className="flex items-center gap-1.5">
+                  <ListChecks className="h-3.5 w-3.5" />
+                  Project Checklist
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    void loadWriteBookChecklist();
+                  }}
+                  disabled={isLoadingWriteBookChecklist}
+                >
+                  {isLoadingWriteBookChecklist ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                  Refresh
+                </Button>
+              </div>
+
+              {writeBookChecklist ? (
+                <>
+                  <div className="space-y-2">
+                    {writeBookChecklist.checks.map((checkItem) => (
+                      <div
+                        key={checkItem.id}
+                        className={`rounded-md border px-3 py-2 text-xs ${
+                          checkItem.ok
+                            ? "border-emerald-500/40 bg-emerald-500/5"
+                            : "border-amber-500/40 bg-amber-500/5"
+                        }`}
+                      >
+                        <div className="flex items-center gap-2">
+                          {checkItem.ok ? (
+                            <Check className="h-3.5 w-3.5 text-emerald-400" />
+                          ) : (
+                            <CircleAlert className="h-3.5 w-3.5 text-amber-300" />
+                          )}
+                          <span className="font-medium">{checkItem.label}</span>
+                        </div>
+                        <p className="mt-1 text-muted-foreground">{checkItem.details}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="rounded-md border border-border/70 bg-background/40 p-3">
+                    <p className="text-xs font-medium">Chapter coverage</p>
+                    <ScrollArea className="mt-2 h-36 pr-2">
+                      <div className="space-y-1.5">
+                        {writeBookChecklist.chapters.map((chapter) => (
+                          <div key={chapter.index} className="rounded border border-border/60 bg-background/70 px-2 py-1.5 text-xs">
+                            <p className="font-medium">
+                              Chapter {chapter.index} · <span className="font-mono">{chapter.texPath}</span>
+                            </p>
+                            <p className="text-muted-foreground">
+                              recordings: {chapter.recordingCount} · transcriptions: {chapter.transcriptionCount} · seed text:{" "}
+                              {chapter.hasSeedText ? "yes" : "no"}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  </div>
+
+                  <p className="text-xs text-muted-foreground">
+                    This check is advisory, not a hard stop. You can continue even with warnings.
+                  </p>
+                </>
+              ) : (
+                <div className="rounded-md border border-border/70 bg-background/30 p-4 text-xs text-muted-foreground">
+                  {isLoadingWriteBookChecklist ? "Loading checklist..." : "Checklist not loaded yet."}
+                </div>
+              )}
+            </div>
+          )}
+
+          {writeBookStep === "codex" && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                <span className="flex items-center gap-1.5">
+                  <TerminalSquare className="h-3.5 w-3.5" />
+                  Codex Environment Check
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    void checkCodexAvailability();
+                  }}
+                  disabled={isCheckingCodexAvailability}
+                >
+                  {isCheckingCodexAvailability ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
+                  Check
+                </Button>
+              </div>
+
+              {codexAvailability ? (
+                <div className="space-y-2">
+                  <div
+                    className={`rounded-md border px-3 py-2 text-xs ${
+                      codexAvailability.installed
+                        ? codexAvailability.authenticated
+                          ? "border-emerald-500/40 bg-emerald-500/5"
+                          : "border-amber-500/40 bg-amber-500/5"
+                        : "border-rose-500/50 bg-rose-500/5"
+                    }`}
+                  >
+                    <p className="font-medium">{codexAvailability.message}</p>
+                    {codexAvailability.version ? (
+                      <p className="mt-1 text-muted-foreground">Version: {codexAvailability.version}</p>
+                    ) : null}
+                    {codexAvailability.loginStatus ? (
+                      <p className="mt-1 text-muted-foreground">Login: {codexAvailability.loginStatus}</p>
+                    ) : null}
+                  </div>
+
+                  {codexAvailability.helpPreview ? (
+                    <pre className="max-h-44 overflow-auto rounded-md border border-border/70 bg-background/60 p-2 font-mono text-[11px] leading-relaxed text-foreground/80">
+                      {codexAvailability.helpPreview}
+                    </pre>
+                  ) : null}
+
+                  {!codexAvailability.installed && (
+                    <p className="text-xs text-muted-foreground">
+                      Install and authenticate with: `npm i -g @openai/codex`, then `codex login`.
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Run the check to verify `codex --help` and `codex login status`.
+                </p>
+              )}
+            </div>
+          )}
+
+          {writeBookStep === "confirm" && (
+            <div className="space-y-3 rounded-md border border-border/70 bg-muted/20 p-3 text-sm">
+              <p>
+                This will start Codex chapter generation in the background and stream terminal events here.
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Runtime permissions are scoped to the current book folder (`workspace-write`) with command network access disabled.
+              </p>
+            </div>
+          )}
+
+          {(writeBookStep === "running" || writeBookStep === "complete") && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                <span>
+                  Status:{" "}
+                  <span className="font-medium">
+                    {writeBookSession?.status || "queued"}
+                    {writeBookSession?.currentChapterIndex
+                      ? ` · chapter ${writeBookSession.currentChapterIndex}/${writeBookSession.totalChapters || 0}`
+                      : ""}
+                  </span>
+                </span>
+                {writeBookSession?.threadId ? (
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    thread: {writeBookSession.threadId.slice(0, 12)}
+                  </span>
+                ) : null}
+              </div>
+
+              <div
+                ref={writeBookTerminalRef}
+                className="h-64 overflow-auto rounded-md border border-border/70 bg-background/80 p-2 font-mono text-[11px] leading-relaxed"
+              >
+                {writeBookSessionLogs.length === 0 ? (
+                  <p className="text-muted-foreground">Waiting for logs...</p>
+                ) : (
+                  writeBookSessionLogs.map((log) => (
+                    <p
+                      key={log.index}
+                      className={
+                        log.tone === "error"
+                          ? "text-rose-300"
+                          : log.tone === "success"
+                            ? "text-emerald-300"
+                            : "text-foreground/90"
+                      }
+                    >
+                      [{new Date(log.at).toLocaleTimeString()}] {log.text}
+                    </p>
+                  ))
+                )}
+              </div>
+
+              {writeBookSession?.error ? (
+                <p className="rounded-md border border-rose-500/50 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">
+                  {writeBookSession.error}
+                </p>
+              ) : null}
+            </div>
+          )}
+
+          <DialogFooter>
+            {writeBookStep === "checklist" && (
+              <>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setIsWriteBookDialogOpen(false);
+                  }}
+                >
+                  Close
+                </Button>
+                <Button onClick={handleWriteBookNextFromChecklist} disabled={isLoadingWriteBookChecklist}>
+                  Next
+                </Button>
+              </>
+            )}
+
+            {writeBookStep === "codex" && (
+              <>
+                <Button variant="outline" onClick={() => setWriteBookStep("checklist")}>
+                  Back
+                </Button>
+                <Button
+                  onClick={() => setWriteBookStep("confirm")}
+                  disabled={!codexAvailability?.installed || isCheckingCodexAvailability}
+                >
+                  Next
+                </Button>
+              </>
+            )}
+
+            {writeBookStep === "confirm" && (
+              <>
+                <Button variant="outline" onClick={() => setWriteBookStep("codex")}>
+                  Back
+                </Button>
+                <Button onClick={handleStartWriteBookSession} disabled={isStartingWriteBookSession}>
+                  {isStartingWriteBookSession ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Play className="mr-2 h-4 w-4" />}
+                  Start
+                </Button>
+              </>
+            )}
+
+            {(writeBookStep === "running" || writeBookStep === "complete") && (
+              <>
+                {isWriteBookRunning ? (
+                  <Button
+                    variant="destructive"
+                    onClick={handleCancelWriteBookSession}
+                    disabled={isCancellingWriteBookSession}
+                  >
+                    {isCancellingWriteBookSession ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Square className="mr-2 h-4 w-4" />
+                    )}
+                    Stop
+                  </Button>
+                ) : null}
+
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setIsWriteBookDialogOpen(false);
+                  }}
+                >
+                  Close
+                </Button>
+              </>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

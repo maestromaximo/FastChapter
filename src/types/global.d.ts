@@ -1,10 +1,14 @@
 import type {
   BookSummary,
+  CodexAvailability,
   FileNode,
   LatexCompileResult,
   RecordingBundle,
   SaveRecordingResult,
   UserProfile,
+  WriteBookChecklist,
+  WriteBookSessionSnapshot,
+  WriteBookSessionStart,
   WriteResult
 } from "@/types/domain";
 
@@ -93,6 +97,14 @@ declare global {
         mimeType?: string;
       }) => Promise<SaveRecordingResult>;
       listRecordings: (payload: { username: string; bookId: string }) => Promise<RecordingBundle>;
+      getWriteBookChecklist: (payload: { username: string; bookId: string }) => Promise<WriteBookChecklist>;
+      checkCodexAvailability: () => Promise<CodexAvailability>;
+      startWriteBookSession: (payload: { username: string; bookId: string }) => Promise<WriteBookSessionStart>;
+      getWriteBookSession: (payload: {
+        sessionId: string;
+        afterLogIndex?: number;
+      }) => Promise<WriteBookSessionSnapshot>;
+      cancelWriteBookSession: (payload: { sessionId: string }) => Promise<{ ok: true; status: string }>;
       writeMyBook: (payload: { username: string; bookId: string }) => Promise<WriteResult>;
     };
   }

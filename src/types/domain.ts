@@ -63,6 +63,73 @@ export type WriteResult = {
   startedAt: string;
   status: string;
   message: string;
+  sessionId?: string;
+};
+
+export type WriteBookChecklistCheck = {
+  id: string;
+  label: string;
+  ok: boolean;
+  blocking: boolean;
+  details: string;
+};
+
+export type WriteBookChecklistChapter = {
+  index: number;
+  texPath: string;
+  hasSeedText: boolean;
+  recordingCount: number;
+  transcriptionCount: number;
+  hasVoiceMaterial: boolean;
+  recordingPaths: string[];
+  transcriptionPaths: string[];
+};
+
+export type WriteBookChecklist = {
+  generatedAt: string;
+  bookTitle: string;
+  checks: WriteBookChecklistCheck[];
+  minimumRecommendedReady: boolean;
+  initialOutlineRecordingPaths: string[];
+  initialOutlineTranscriptionPaths: string[];
+  chapters: WriteBookChecklistChapter[];
+};
+
+export type CodexAvailability = {
+  checkedAt: string;
+  installed: boolean;
+  authenticated: boolean;
+  version: string | null;
+  helpPreview: string;
+  loginStatus: string;
+  message: string;
+};
+
+export type WriteBookSessionStart = {
+  sessionId: string;
+  startedAt: string;
+};
+
+export type WriteBookSessionLogLine = {
+  index: number;
+  at: string;
+  tone: "info" | "success" | "error";
+  text: string;
+};
+
+export type WriteBookSessionSnapshot = {
+  sessionId: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  startedAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+  threadId: string | null;
+  currentChapterIndex: number | null;
+  totalChapters: number;
+  error: string | null;
+  logs: WriteBookSessionLogLine[];
+  nextLogIndex: number;
+  hasMoreLogs: boolean;
 };
 
 export type LatexCompileResult = {

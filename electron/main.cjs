@@ -32,9 +32,19 @@ const LATEX_IGNORED_DIRS = new Set([
   ".git",
   "node_modules"
 ]);
+const CODEX_PROMPTS_DIR = "prompts";
+const CODEX_PROMPT_FILES = {
+  bookContext: "book-context.md",
+  firstChapter: "write-first-chapter.md",
+  nextChapter: "write-next-chapter.md"
+};
+const WRITE_BOOK_LOG_LINE_LIMIT = 2500;
+const WRITE_BOOK_LOG_LINE_LENGTH_LIMIT = 1200;
+const WRITE_BOOK_POLL_LOG_LIMIT = 200;
 
 const transcriptionJobs = new Map();
 const latexCompileCache = new Map();
+const writeBookSessions = new Map();
 let latexCompilerPromise = null;
 
 function normalizeUserName(value) {
@@ -175,6 +185,18 @@ async function ensureLatexScaffold(bookRoot) {
   const mainPath = path.join(bookRoot, "main.tex");
   if (!(await fileExists(mainPath))) {
     await refreshMainTeX(bookRoot);
+  }
+}
+
+async function ensureCodexPromptScaffold(bookRoot) {
+  const promptsRoot = path.join(bookRoot, CODEX_PROMPTS_DIR);
+  await ensureDir(promptsRoot);
+
+  for (const fileName of Object.values(CODEX_PROMPT_FILES)) {
+    const promptPath = path.join(promptsRoot, fileName);
+    if (!(await fileExists(promptPath))) {
+      await fs.writeFile(promptPath, "", "utf8");
+    }
   }
 }
 
@@ -715,6 +737,7 @@ async function createBook(username, titleRaw) {
   await ensureDir(path.join(bookRoot, "transcriptions"));
   await ensureDir(path.join(bookRoot, "recordings"));
   await ensureLatexScaffold(bookRoot);
+  await ensureCodexPromptScaffold(bookRoot);
 
   const metadata = {
     id,
@@ -789,6 +812,7 @@ async function getBookTree(username, bookId) {
   const root = getBookRoot(username, bookId);
   await assertBookExists(root, bookId);
   await ensureLatexScaffold(root);
+  await ensureCodexPromptScaffold(root);
   return readTree(root, root);
 }
 
@@ -1468,14 +1492,715 @@ async function listRecordings(username, bookId) {
   return { recordings, transcriptions, jobs };
 }
 
+function sanitizeLogLine(value) {
+  return String(value || "")
+    .replace(/\u001b\[[0-9;]*m/g, "")
+    .replace(/\r/g, "");
+}
+
+function appendWriteBookLog(session, tone, text) {
+  const now = new Date().toISOString();
+  const normalizedTone = tone === "error" ? "error" : tone === "success" ? "success" : "info";
+  const lines = String(text || "")
+    .split("\n")
+    .map((line) => sanitizeLogLine(line))
+    .filter((line) => line.trim().length > 0);
+
+  if (lines.length === 0) {
+    lines.push("");
+  }
+
+  lines.forEach((line) => {
+    session.logs.push({
+      index: session.nextLogIndex++,
+      at: now,
+      tone: normalizedTone,
+      text: line.slice(0, WRITE_BOOK_LOG_LINE_LENGTH_LIMIT)
+    });
+  });
+
+  while (session.logs.length > WRITE_BOOK_LOG_LINE_LIMIT) {
+    session.logs.shift();
+  }
+}
+
+function buildWriteBookSessionPublic(session, afterLogIndex = 0) {
+  const fromIndex = Number.isFinite(afterLogIndex) ? Number(afterLogIndex) : 0;
+  const matchingLogs = session.logs.filter((entry) => entry.index >= fromIndex);
+  const logs = matchingLogs.slice(0, WRITE_BOOK_POLL_LOG_LIMIT);
+  const nextLogIndex = logs.length > 0 ? logs[logs.length - 1].index + 1 : fromIndex;
+  const hasMoreLogs = matchingLogs.length > logs.length;
+
+  return {
+    sessionId: session.id,
+    status: session.status,
+    startedAt: session.startedAt,
+    updatedAt: session.updatedAt,
+    completedAt: session.completedAt || null,
+    threadId: session.threadId || null,
+    currentChapterIndex: session.currentChapterIndex,
+    totalChapters: session.totalChapters,
+    error: session.error || null,
+    logs,
+    nextLogIndex: hasMoreLogs ? nextLogIndex : session.nextLogIndex,
+    hasMoreLogs
+  };
+}
+
+function hasPathPrefix(candidate, prefix) {
+  const cleanCandidate = String(candidate || "").replaceAll("\\", "/");
+  const cleanPrefix = String(prefix || "")
+    .replaceAll("\\", "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+
+  if (!cleanPrefix) return cleanCandidate.length > 0;
+  return cleanCandidate === cleanPrefix || cleanCandidate.startsWith(`${cleanPrefix}/`);
+}
+
+async function readTextOrEmpty(filePath) {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+async function getWriteBookChecklist(username, bookId) {
+  const bookRoot = getBookRoot(username, bookId);
+  await assertBookExists(bookRoot, bookId);
+  await ensureLatexScaffold(bookRoot);
+  await ensureCodexPromptScaffold(bookRoot);
+
+  const bookMetaPath = path.join(bookRoot, "book.json");
+  let bookTitle = "Untitled Book";
+  try {
+    const meta = await readJson(bookMetaPath);
+    if (typeof meta?.title === "string" && meta.title.trim()) {
+      bookTitle = meta.title.trim();
+    }
+  } catch {
+    // Ignore malformed metadata and keep fallback title.
+  }
+
+  const chapters = await listChapterDescriptors(bookRoot);
+  const recordingsRoot = path.join(bookRoot, "recordings");
+  const transcriptionsRoot = path.join(bookRoot, "transcriptions");
+  await ensureDir(recordingsRoot);
+  await ensureDir(transcriptionsRoot);
+
+  const recordingEntries = await listFilesRecursive(recordingsRoot);
+  const transcriptionEntries = (await listFilesRecursive(transcriptionsRoot)).filter(
+    (entry) => !entry.relativePath.endsWith(".meta.json")
+  );
+
+  const initialOutlineRecordingPaths = recordingEntries
+    .filter((entry) => hasPathPrefix(entry.relativePath, "initial-outline"))
+    .map((entry) => `recordings/${entry.relativePath}`);
+  const initialOutlineTranscriptionPaths = transcriptionEntries
+    .filter((entry) => hasPathPrefix(entry.relativePath, "initial-outline"))
+    .map((entry) => `transcriptions/${entry.relativePath}`);
+  const initialOutlineCount = initialOutlineRecordingPaths.length + initialOutlineTranscriptionPaths.length;
+
+  const chapterDiagnostics = [];
+  for (const chapter of chapters) {
+    const chapterFolder = `chapters/chapter-${chapter.index}`;
+    const chapterRecordingPaths = recordingEntries
+      .filter((entry) => hasPathPrefix(entry.relativePath, chapterFolder))
+      .map((entry) => `recordings/${entry.relativePath}`);
+    const chapterTranscriptionPaths = transcriptionEntries
+      .filter((entry) => hasPathPrefix(entry.relativePath, chapterFolder))
+      .map((entry) => `transcriptions/${entry.relativePath}`);
+
+    const texAbsolutePath = resolveInside(bookRoot, chapter.texRelativePath);
+    const texContent = await readTextOrEmpty(texAbsolutePath);
+    const hasSeedText = texContent.trim().length > 0;
+
+    chapterDiagnostics.push({
+      index: chapter.index,
+      texPath: chapter.texRelativePath,
+      hasSeedText,
+      recordingCount: chapterRecordingPaths.length,
+      transcriptionCount: chapterTranscriptionPaths.length,
+      hasVoiceMaterial: chapterRecordingPaths.length > 0 || chapterTranscriptionPaths.length > 0,
+      recordingPaths: chapterRecordingPaths,
+      transcriptionPaths: chapterTranscriptionPaths
+    });
+  }
+
+  const missingVoiceChapterIndexes = chapterDiagnostics
+    .filter((chapter) => !chapter.hasVoiceMaterial)
+    .map((chapter) => chapter.index);
+  const missingSeedChapterIndexes = chapterDiagnostics
+    .filter((chapter) => !chapter.hasSeedText)
+    .map((chapter) => chapter.index);
+
+  const checks = [
+    {
+      id: "initial-outline-material",
+      label: "Initial outline material",
+      ok: initialOutlineCount > 0,
+      blocking: false,
+      details:
+        initialOutlineCount > 0
+          ? `${initialOutlineCount} initial-outline file(s) detected.`
+          : "No initial-outline recordings/transcriptions found yet."
+    },
+    {
+      id: "chapters-exist",
+      label: "Chapter folders",
+      ok: chapterDiagnostics.length > 0,
+      blocking: false,
+      details:
+        chapterDiagnostics.length > 0
+          ? `${chapterDiagnostics.length} chapter folder(s) detected.`
+          : "No chapters found. Create at least one chapter before writing."
+    },
+    {
+      id: "chapter-voice-material",
+      label: "Voice material per chapter",
+      ok: missingVoiceChapterIndexes.length === 0 && chapterDiagnostics.length > 0,
+      blocking: false,
+      details:
+        missingVoiceChapterIndexes.length === 0
+          ? "Every chapter has recordings or transcriptions."
+          : `Missing chapter voice material for: ${missingVoiceChapterIndexes.join(", ")}.`
+    },
+    {
+      id: "chapter-seed-text",
+      label: "Chapter seed text exists",
+      ok: missingSeedChapterIndexes.length === 0 && chapterDiagnostics.length > 0,
+      blocking: false,
+      details:
+        missingSeedChapterIndexes.length === 0
+          ? "Each chapter .tex file has some content."
+          : `Empty chapter tex files: ${missingSeedChapterIndexes.join(", ")}.`
+    }
+  ];
+
+  const minimumRecommendedReady =
+    chapterDiagnostics.length > 0 && initialOutlineCount > 0 && missingVoiceChapterIndexes.length === 0;
+
+  return {
+    generatedAt: new Date().toISOString(),
+    bookTitle,
+    checks,
+    minimumRecommendedReady,
+    initialOutlineRecordingPaths,
+    initialOutlineTranscriptionPaths,
+    chapters: chapterDiagnostics
+  };
+}
+
+async function checkCodexAvailability() {
+  const checkedAt = new Date().toISOString();
+
+  try {
+    const versionResult = await runCommand("codex", ["--version"], process.cwd(), 15000);
+    const helpResult = await runCommand("codex", ["--help"], process.cwd(), 15000);
+    const loginStatusResult = await runCommand("codex", ["login", "status"], process.cwd(), 15000);
+
+    if (versionResult.code !== 0) {
+      return {
+        checkedAt,
+        installed: false,
+        authenticated: false,
+        version: null,
+        helpPreview: "",
+        loginStatus: "",
+        message: trimLogTail(versionResult.stderr || versionResult.stdout || "codex --version failed.")
+      };
+    }
+
+    const loginText = sanitizeLogLine(`${loginStatusResult.stdout}\n${loginStatusResult.stderr}`).trim();
+    const authenticated =
+      loginStatusResult.code === 0 && !/(not\s+logged\s+in|logged\s+out)/i.test(loginText);
+
+    return {
+      checkedAt,
+      installed: true,
+      authenticated,
+      version: sanitizeLogLine(versionResult.stdout || versionResult.stderr).trim() || null,
+      helpPreview: sanitizeLogLine(helpResult.stdout || helpResult.stderr)
+        .split("\n")
+        .slice(0, 16)
+        .join("\n")
+        .trim(),
+      loginStatus: loginText || "No login status output.",
+      message: authenticated
+        ? "Codex is installed and authenticated."
+        : "Codex is installed, but no active login was detected."
+    };
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error);
+    const notInstalled = /ENOENT|not found/i.test(message);
+    return {
+      checkedAt,
+      installed: false,
+      authenticated: false,
+      version: null,
+      helpPreview: "",
+      loginStatus: "",
+      message: notInstalled
+        ? "Codex CLI is not installed or not available on PATH."
+        : `Unable to check Codex: ${message}`
+    };
+  }
+}
+
+function applyPromptVariables(template, variables) {
+  return String(template || "").replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (_full, key) =>
+    Object.prototype.hasOwnProperty.call(variables, key) ? String(variables[key]) : ""
+  );
+}
+
+async function loadCodexPromptTemplates(bookRoot) {
+  await ensureCodexPromptScaffold(bookRoot);
+  const promptsRoot = path.join(bookRoot, CODEX_PROMPTS_DIR);
+
+  const readPrompt = async (fileName) =>
+    readTextOrEmpty(path.join(promptsRoot, fileName)).then((value) => value.trim());
+
+  return {
+    bookContext: await readPrompt(CODEX_PROMPT_FILES.bookContext),
+    firstChapter: await readPrompt(CODEX_PROMPT_FILES.firstChapter),
+    nextChapter: await readPrompt(CODEX_PROMPT_FILES.nextChapter)
+  };
+}
+
+function buildChapterPrompt({
+  isFirstChapter,
+  bookTitle,
+  chapter,
+  totalChapters,
+  chapterOverview,
+  initialOutlineOverview,
+  promptTemplates
+}) {
+  const baseVariables = {
+    BOOK_TITLE: bookTitle,
+    CHAPTER_INDEX: String(chapter.index),
+    CHAPTER_FILE: chapter.texPath,
+    TOTAL_CHAPTERS: String(totalChapters),
+    CHAPTER_OVERVIEW: chapterOverview,
+    CHAPTER_TRANSCRIPTIONS:
+      chapter.transcriptionPaths.length > 0
+        ? chapter.transcriptionPaths.map((item) => `- ${item}`).join("\n")
+        : "- (none found)",
+    CHAPTER_RECORDINGS:
+      chapter.recordingPaths.length > 0
+        ? chapter.recordingPaths.map((item) => `- ${item}`).join("\n")
+        : "- (none found)",
+    INITIAL_OUTLINE_FILES: initialOutlineOverview
+  };
+
+  const defaultFirstPrompt = [
+    `You are drafting the book "${bookTitle}" inside this workspace.`,
+    "",
+    "Context:",
+    chapterOverview,
+    "",
+    "Initial outline material:",
+    initialOutlineOverview,
+    "",
+    `Write Chapter ${chapter.index} now.`,
+    `- Target LaTeX file: ${chapter.texPath}`,
+    "- Use transcriptions as the source of truth for facts and claims.",
+    "- Keep LaTeX valid and keep existing project structure intact.",
+    "- Write directly into the target file.",
+    "- If evidence is missing, keep prose conservative and avoid inventing facts.",
+    "",
+    "Chapter transcriptions:",
+    baseVariables.CHAPTER_TRANSCRIPTIONS,
+    "",
+    "Chapter recordings:",
+    baseVariables.CHAPTER_RECORDINGS,
+    "",
+    "After writing, return a short summary of what you changed."
+  ].join("\n");
+
+  const defaultNextPrompt = [
+    `Continue in the same thread and write Chapter ${chapter.index}.`,
+    `- Target LaTeX file: ${chapter.texPath}`,
+    "- Keep continuity with the previous chapters.",
+    "- Use chapter transcriptions as source truth.",
+    "- Write directly into the target file and keep LaTeX valid.",
+    "",
+    "Chapter transcriptions:",
+    baseVariables.CHAPTER_TRANSCRIPTIONS,
+    "",
+    "Chapter recordings:",
+    baseVariables.CHAPTER_RECORDINGS,
+    "",
+    "Then return a short summary."
+  ].join("\n");
+
+  const bookContextPrompt = promptTemplates.bookContext
+    ? applyPromptVariables(promptTemplates.bookContext, baseVariables)
+    : "";
+  const taskPromptTemplate = isFirstChapter ? promptTemplates.firstChapter : promptTemplates.nextChapter;
+  const fallbackTaskPrompt = isFirstChapter ? defaultFirstPrompt : defaultNextPrompt;
+  const taskPrompt = taskPromptTemplate
+    ? applyPromptVariables(taskPromptTemplate, baseVariables)
+    : fallbackTaskPrompt;
+
+  return [bookContextPrompt, taskPrompt].filter(Boolean).join("\n\n");
+}
+
+function formatChapterOverview(chapters) {
+  if (chapters.length === 0) return "- (no chapters found)";
+
+  return chapters
+    .map(
+      (chapter) =>
+        `- Chapter ${chapter.index}: ${chapter.texPath} | recordings=${chapter.recordingCount} | transcriptions=${chapter.transcriptionCount}`
+    )
+    .join("\n");
+}
+
+function formatInitialOutlineOverview(checklist) {
+  const lines = [
+    ...checklist.initialOutlineTranscriptionPaths.map((item) => `- ${item}`),
+    ...checklist.initialOutlineRecordingPaths.map((item) => `- ${item}`)
+  ];
+  if (lines.length === 0) return "- (none found)";
+  return lines.slice(0, 40).join("\n");
+}
+
+function logCodexItemEvent(session, eventType, item, commandOutputOffsets) {
+  if (item.type === "command_execution") {
+    if (eventType === "item.started") {
+      appendWriteBookLog(session, "info", `$ ${item.command}`);
+    }
+
+    const output = sanitizeLogLine(item.aggregated_output || "");
+    const previousLength = commandOutputOffsets.get(item.id) || 0;
+    if (output.length > previousLength) {
+      const diff = output.slice(previousLength);
+      appendWriteBookLog(session, "info", diff);
+    }
+    commandOutputOffsets.set(item.id, output.length);
+
+    if (eventType === "item.completed") {
+      const exit = Number.isFinite(item.exit_code) ? item.exit_code : "unknown";
+      const tone = item.status === "failed" ? "error" : "info";
+      appendWriteBookLog(session, tone, `[command ${item.status}] exit=${exit}`);
+    }
+    return;
+  }
+
+  if (eventType !== "item.completed") return;
+
+  if (item.type === "agent_message") {
+    appendWriteBookLog(session, "success", item.text || "[agent message]");
+    return;
+  }
+
+  if (item.type === "file_change") {
+    const files = (item.changes || []).map((change) => `${change.kind}: ${change.path}`).join("\n");
+    appendWriteBookLog(
+      session,
+      item.status === "failed" ? "error" : "info",
+      files ? `[file_change]\n${files}` : "[file_change] completed"
+    );
+    return;
+  }
+
+  if (item.type === "reasoning") {
+    appendWriteBookLog(session, "info", `[reasoning] ${item.text || ""}`);
+    return;
+  }
+
+  if (item.type === "mcp_tool_call") {
+    const outcome = item.status === "failed" ? `failed: ${item.error?.message || "unknown error"}` : item.status;
+    appendWriteBookLog(session, item.status === "failed" ? "error" : "info", `[mcp] ${item.server}/${item.tool}: ${outcome}`);
+    return;
+  }
+
+  if (item.type === "web_search") {
+    appendWriteBookLog(session, "info", `[web_search] ${item.query}`);
+    return;
+  }
+
+  if (item.type === "todo_list") {
+    const lines = item.items
+      .map((todo) => `${todo.completed ? "[x]" : "[ ]"} ${todo.text}`)
+      .join("\n");
+    appendWriteBookLog(session, "info", lines ? `[todo]\n${lines}` : "[todo]");
+    return;
+  }
+
+  if (item.type === "error") {
+    appendWriteBookLog(session, "error", item.message || "Codex error item.");
+  }
+}
+
+async function runCodexTurn(session, thread, prompt) {
+  const commandOutputOffsets = new Map();
+  const turnAbortController = new AbortController();
+  session.activeAbortController = turnAbortController;
+
+  const streamedTurn = await thread.runStreamed(prompt, { signal: turnAbortController.signal });
+
+  try {
+    for await (const event of streamedTurn.events) {
+      session.updatedAt = new Date().toISOString();
+
+      if (session.cancelRequested) {
+        turnAbortController.abort();
+      }
+
+      if (event.type === "thread.started") {
+        session.threadId = event.thread_id;
+        appendWriteBookLog(session, "info", `Thread started: ${event.thread_id}`);
+        continue;
+      }
+
+      if (event.type === "turn.started") {
+        appendWriteBookLog(session, "info", "Turn started.");
+        continue;
+      }
+
+      if (event.type === "turn.completed") {
+        appendWriteBookLog(
+          session,
+          "info",
+          `Turn completed. Tokens: in=${event.usage.input_tokens}, cached=${event.usage.cached_input_tokens}, out=${event.usage.output_tokens}`
+        );
+        continue;
+      }
+
+      if (event.type === "turn.failed") {
+        throw new Error(event.error?.message || "Codex turn failed.");
+      }
+
+      if (event.type === "error") {
+        throw new Error(event.message || "Codex stream error.");
+      }
+
+      if (event.type === "item.started" || event.type === "item.updated" || event.type === "item.completed") {
+        logCodexItemEvent(session, event.type, event.item, commandOutputOffsets);
+      }
+    }
+  } finally {
+    session.activeAbortController = null;
+  }
+}
+
+async function runWriteBookSession(session) {
+  session.status = "running";
+  session.updatedAt = new Date().toISOString();
+  appendWriteBookLog(session, "info", "Write Book session started.");
+
+  try {
+    const { username, bookId } = session;
+    const bookRoot = getBookRoot(username, bookId);
+
+    await assertBookExists(bookRoot, bookId);
+    await ensureLatexScaffold(bookRoot);
+    await ensureCodexPromptScaffold(bookRoot);
+
+    const checklist = await getWriteBookChecklist(username, bookId);
+    const codexStatus = await checkCodexAvailability();
+    if (!codexStatus.installed) {
+      throw new Error(
+        `${codexStatus.message}\nInstall Codex CLI first (for example: npm i -g @openai/codex) and authenticate with \`codex login\`.`
+      );
+    }
+
+    appendWriteBookLog(
+      session,
+      codexStatus.authenticated ? "success" : "info",
+      `${codexStatus.version || "codex"}\n${codexStatus.loginStatus || ""}`.trim()
+    );
+
+    const profile = await readUserProfilePrivate(username);
+    const apiKey = String(profile.integrations.openAIApiKey || "").trim();
+
+    if (apiKey) {
+      appendWriteBookLog(session, "info", "Using API key from local profile for Codex session.");
+    } else if (!codexStatus.authenticated) {
+      throw new Error("No saved API key and Codex login is not active. Run `codex login` before continuing.");
+    }
+
+    const { Codex } = await import("@openai/codex-sdk");
+    const codex = new Codex({
+      codexPathOverride: "codex",
+      apiKey: apiKey || undefined
+    });
+
+    const thread = codex.startThread({
+      sandboxMode: "workspace-write",
+      workingDirectory: bookRoot,
+      networkAccessEnabled: false,
+      approvalPolicy: "never",
+      skipGitRepoCheck: true
+    });
+
+    const chapterOverview = formatChapterOverview(checklist.chapters);
+    const initialOutlineOverview = formatInitialOutlineOverview(checklist);
+    const templates = await loadCodexPromptTemplates(bookRoot);
+
+    if (checklist.chapters.length === 0) {
+      throw new Error("No chapters found. Create chapter folders first.");
+    }
+
+    session.totalChapters = checklist.chapters.length;
+    appendWriteBookLog(
+      session,
+      "info",
+      `Scoped permissions: sandbox=workspace-write, workingDirectory=${bookRoot}, networkAccessEnabled=false`
+    );
+
+    for (let i = 0; i < checklist.chapters.length; i += 1) {
+      if (session.cancelRequested) {
+        throw new Error("Write Book session cancelled.");
+      }
+
+      const chapter = checklist.chapters[i];
+      session.currentChapterIndex = chapter.index;
+      session.updatedAt = new Date().toISOString();
+
+      const prompt = buildChapterPrompt({
+        isFirstChapter: i === 0,
+        bookTitle: checklist.bookTitle,
+        chapter,
+        totalChapters: checklist.chapters.length,
+        chapterOverview,
+        initialOutlineOverview,
+        promptTemplates: templates
+      });
+
+      appendWriteBookLog(
+        session,
+        "info",
+        `Running Codex for Chapter ${chapter.index}/${checklist.chapters.length} -> ${chapter.texPath}`
+      );
+      await runCodexTurn(session, thread, prompt);
+
+      if (thread.id) {
+        session.threadId = thread.id;
+      }
+      appendWriteBookLog(session, "success", `Chapter ${chapter.index} turn completed.`);
+    }
+
+    await touchBook(username, bookId);
+    session.status = "completed";
+    session.completedAt = new Date().toISOString();
+    session.updatedAt = session.completedAt;
+    appendWriteBookLog(session, "success", "Write Book process completed.");
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error);
+
+    if (session.cancelRequested || /cancelled/i.test(message)) {
+      session.status = "cancelled";
+      session.error = null;
+      appendWriteBookLog(session, "info", "Write Book process cancelled.");
+    } else {
+      session.status = "failed";
+      session.error = message;
+      appendWriteBookLog(session, "error", message);
+    }
+
+    session.completedAt = new Date().toISOString();
+    session.updatedAt = session.completedAt;
+  }
+}
+
+async function startWriteBookSession(username, bookId) {
+  const activeSession = [...writeBookSessions.values()].find(
+    (session) =>
+      session.username === username &&
+      session.bookId === bookId &&
+      (session.status === "queued" || session.status === "running")
+  );
+
+  if (activeSession) {
+    return {
+      sessionId: activeSession.id,
+      startedAt: activeSession.startedAt
+    };
+  }
+
+  const checklist = await getWriteBookChecklist(username, bookId);
+  const now = new Date().toISOString();
+  const session = {
+    id: uuidv4(),
+    username,
+    bookId,
+    status: "queued",
+    startedAt: now,
+    updatedAt: now,
+    completedAt: null,
+    error: null,
+    threadId: null,
+    currentChapterIndex: null,
+    totalChapters: checklist.chapters.length,
+    logs: [],
+    nextLogIndex: 0,
+    cancelRequested: false,
+    activeAbortController: null
+  };
+
+  writeBookSessions.set(session.id, session);
+  appendWriteBookLog(session, "info", `Queued Write Book session for "${checklist.bookTitle}".`);
+
+  setImmediate(() => {
+    runWriteBookSession(session).catch((error) => {
+      const message = String(error instanceof Error ? error.message : error);
+      session.status = "failed";
+      session.error = message;
+      session.completedAt = new Date().toISOString();
+      session.updatedAt = session.completedAt;
+      appendWriteBookLog(session, "error", message);
+    });
+  });
+
+  return {
+    sessionId: session.id,
+    startedAt: session.startedAt
+  };
+}
+
+function getWriteBookSession(sessionId, afterLogIndex = 0) {
+  const session = writeBookSessions.get(String(sessionId || ""));
+  if (!session) {
+    throw new Error("Write Book session not found.");
+  }
+
+  return buildWriteBookSessionPublic(session, afterLogIndex);
+}
+
+function cancelWriteBookSession(sessionId) {
+  const session = writeBookSessions.get(String(sessionId || ""));
+  if (!session) {
+    throw new Error("Write Book session not found.");
+  }
+
+  if (session.status === "completed" || session.status === "failed" || session.status === "cancelled") {
+    return { ok: true, status: session.status };
+  }
+
+  session.cancelRequested = true;
+  session.updatedAt = new Date().toISOString();
+  appendWriteBookLog(session, "info", "Cancellation requested.");
+
+  if (session.activeAbortController) {
+    session.activeAbortController.abort();
+  }
+
+  return { ok: true, status: session.status };
+}
+
 async function triggerWriteMyBook(username, bookId) {
+  const started = await startWriteBookSession(username, bookId);
   await touchBook(username, bookId);
 
   return {
-    startedAt: new Date().toISOString(),
+    startedAt: started.startedAt,
     status: "queued",
-    message:
-      "Placeholder execution complete. Next step: connect Codex SDK + OpenAI transcription inputs to generate LaTeX chapters."
+    sessionId: started.sessionId,
+    message: "Write Book session queued. Poll the write session endpoint for live output."
   };
 }
 
@@ -1556,6 +2281,25 @@ function registerIpcHandlers() {
       bookId,
       entryRelativePath
     });
+  });
+  ipcMain.handle("book:getWriteBookChecklist", async (_event, payload) => {
+    const { username, bookId } = payload;
+    return getWriteBookChecklist(normalizeUserName(username), bookId);
+  });
+  ipcMain.handle("book:checkCodexAvailability", async () => {
+    return checkCodexAvailability();
+  });
+  ipcMain.handle("book:startWriteBookSession", async (_event, payload) => {
+    const { username, bookId } = payload;
+    return startWriteBookSession(normalizeUserName(username), bookId);
+  });
+  ipcMain.handle("book:getWriteBookSession", async (_event, payload) => {
+    const { sessionId, afterLogIndex } = payload;
+    return getWriteBookSession(sessionId, afterLogIndex);
+  });
+  ipcMain.handle("book:cancelWriteBookSession", async (_event, payload) => {
+    const { sessionId } = payload;
+    return cancelWriteBookSession(sessionId);
   });
   ipcMain.handle("book:writeMyBook", async (_event, payload) => {
     const { username, bookId } = payload;

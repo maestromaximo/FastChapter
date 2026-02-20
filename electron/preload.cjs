@@ -23,5 +23,10 @@ contextBridge.exposeInMainWorld("fastChapter", {
   compileLatex: (payload) => ipcRenderer.invoke("book:compileLatex", payload),
   saveRecording: (payload) => ipcRenderer.invoke("book:saveRecording", payload),
   listRecordings: (payload) => ipcRenderer.invoke("book:listRecordings", payload),
+  getWriteBookChecklist: (payload) => ipcRenderer.invoke("book:getWriteBookChecklist", payload),
+  checkCodexAvailability: () => ipcRenderer.invoke("book:checkCodexAvailability"),
+  startWriteBookSession: (payload) => ipcRenderer.invoke("book:startWriteBookSession", payload),
+  getWriteBookSession: (payload) => ipcRenderer.invoke("book:getWriteBookSession", payload),
+  cancelWriteBookSession: (payload) => ipcRenderer.invoke("book:cancelWriteBookSession", payload),
   writeMyBook: (payload) => ipcRenderer.invoke("book:writeMyBook", payload)
 });
