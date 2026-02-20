@@ -14,9 +14,9 @@
     "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 nodemon --watch electron --ext cjs --exec \"electron electron/main.cjs\"",
     "build": "vite build",
     "pack": "npm run build && electron-builder --dir",
-    "dist": "npm run build && electron-builder",
-    "dist:win": "npm run build && electron-builder --win nsis portable",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip",
+    "dist": "npm run build && electron-builder --publish never",
+    "dist:win": "npm run build && electron-builder --publish never --win nsis portable",
+    "dist:mac": "npm run build && electron-builder --publish never --mac dmg zip",
     "dist:unpacked": "npm run build && electron-builder --dir",
     "preview": "vite preview",
     "start": "electron electron/main.cjs"
