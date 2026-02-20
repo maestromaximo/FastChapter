@@ -1,10 +1,13 @@
 import type {
   BookSummary,
   CodexAvailability,
+  ExportBookArchiveResult,
   FileNode,
   LatexCompileResult,
+  PromptTemplateLibrary,
   RecordingBundle,
   SaveRecordingResult,
+  SetupStatus,
   UserProfile,
   WriteBookChecklist,
   WriteBookSessionSnapshot,
@@ -30,6 +33,35 @@ declare global {
         checkedAt: string;
         message: string;
       }>;
+      getSetupStatus: (payload: { username: string }) => Promise<SetupStatus>;
+      listPromptTemplates: (payload: { username: string }) => Promise<PromptTemplateLibrary>;
+      createPromptTemplateVariant: (payload: {
+        username: string;
+        promptKey: "bookContext" | "firstChapter" | "nextChapter" | "verifyMainTex";
+        name: string;
+        content: string;
+      }) => Promise<{
+        promptKey: string;
+        template: {
+          id: string;
+          name: string;
+          source: "custom";
+          content: string;
+          createdAt: string;
+          updatedAt: string;
+        };
+      }>;
+      deletePromptTemplateVariant: (payload: {
+        username: string;
+        promptKey: "bookContext" | "firstChapter" | "nextChapter" | "verifyMainTex";
+        templateId: string;
+      }) => Promise<{ ok: true; promptKey: string; activeTemplateId: string }>;
+      setActivePromptTemplate: (payload: {
+        username: string;
+        promptKey: "bookContext" | "firstChapter" | "nextChapter" | "verifyMainTex";
+        templateId: string;
+      }) => Promise<{ ok: true; promptKey: string; activeTemplateId: string }>;
+      openExternalUrl: (payload: { url: string }) => Promise<{ ok: true }>;
 
       createBook: (payload: { username: string; title: string }) => Promise<BookSummary>;
       renameBook: (payload: { username: string; bookId: string; title: string }) => Promise<BookSummary>;
@@ -87,6 +119,12 @@ declare global {
         bookId: string;
         entryRelativePath?: string;
       }) => Promise<LatexCompileResult>;
+      exportBookArchive: (payload: {
+        username: string;
+        bookId: string;
+        includeRecordings?: boolean;
+        includeTranscriptions?: boolean;
+      }) => Promise<ExportBookArchiveResult>;
       saveRecording: (payload: {
         username: string;
         bookId: string;

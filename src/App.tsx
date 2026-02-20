@@ -14,6 +14,7 @@ import {
   CircleAlert,
   ChevronDown,
   ChevronRight,
+  Download,
   FileText,
   Folder,
   FolderPlus,
@@ -60,14 +61,17 @@ import type {
   CodexAvailability,
   FileNode,
   LatexCompileResult,
+  PromptTemplateGroup,
+  PromptTemplateLibrary,
   RecordingBundle,
+  SetupStatus,
   UserProfile,
   WriteBookChecklist,
   WriteBookSessionLogLine,
   WriteBookSessionSnapshot
 } from "@/types/domain";
 
-type AppScreen = "auth" | "bookshelf" | "workspace" | "profile";
+type AppScreen = "auth" | "setup" | "bookshelf" | "personalization" | "workspace" | "profile";
 
 type Notice = {
   tone: "info" | "success" | "error";
@@ -112,6 +116,7 @@ type CapturedAudio = {
 };
 
 type WriteBookDialogStep = "checklist" | "codex" | "confirm" | "running" | "complete";
+type PromptTemplateKey = "bookContext" | "firstChapter" | "nextChapter" | "verifyMainTex";
 
 function isEditableFile(filePath: string) {
   return /\.(tex|txt|md|json|ya?ml)$/i.test(filePath);
@@ -337,12 +342,22 @@ export default function App() {
   const [userRootPath, setUserRootPath] = useState<string>("");
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [openAiApiKeyInput, setOpenAiApiKeyInput] = useState("");
+  const [setupStatus, setSetupStatus] = useState<SetupStatus | null>(null);
+  const [isLoadingSetupStatus, setIsLoadingSetupStatus] = useState(false);
+  const [promptLibrary, setPromptLibrary] = useState<PromptTemplateLibrary | null>(null);
+  const [isLoadingPromptLibrary, setIsLoadingPromptLibrary] = useState(false);
+  const [selectedPromptKey, setSelectedPromptKey] = useState<PromptTemplateKey>("bookContext");
+  const [newPromptVariantName, setNewPromptVariantName] = useState("");
+  const [newPromptVariantContent, setNewPromptVariantContent] = useState("");
+  const [isCreatingPromptVariant, setIsCreatingPromptVariant] = useState(false);
+  const [isApplyingPromptVariant, setIsApplyingPromptVariant] = useState(false);
+  const [isDeletingPromptVariant, setIsDeletingPromptVariant] = useState(false);
   const [isSavingApiKey, setIsSavingApiKey] = useState(false);
   const [isTestingApiKey, setIsTestingApiKey] = useState(false);
   const [apiKeyTestMessage, setApiKeyTestMessage] = useState<string | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
-  const [profileReturnScreen, setProfileReturnScreen] = useState<"bookshelf" | "workspace">("bookshelf");
+  const [profileReturnScreen, setProfileReturnScreen] = useState<"bookshelf" | "workspace" | "setup" | "personalization">("bookshelf");
 
   const [books, setBooks] = useState<BookSummary[]>([]);
   const [selectedBook, setSelectedBook] = useState<BookSummary | null>(null);
@@ -373,6 +388,10 @@ export default function App() {
   const [lastLatexCompile, setLastLatexCompile] = useState<LatexCompileResult | null>(null);
   const [latexCompileError, setLatexCompileError] = useState<string | null>(null);
   const [isVoicePaneOpen, setIsVoicePaneOpen] = useState(true);
+  const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
+  const [exportIncludeTranscriptions, setExportIncludeTranscriptions] = useState(false);
+  const [exportIncludeRecordings, setExportIncludeRecordings] = useState(false);
+  const [isExportingBook, setIsExportingBook] = useState(false);
 
   const [recordingData, setRecordingData] = useState<RecordingBundle>({
     recordings: [],
@@ -424,6 +443,12 @@ export default function App() {
     () => new Set(selectedExplorerPaths),
     [selectedExplorerPaths]
   );
+  const selectedPromptGroup = useMemo(
+    () =>
+      promptLibrary?.prompts.find((group) => group.promptKey === selectedPromptKey) ||
+      null,
+    [promptLibrary, selectedPromptKey]
+  );
   const hasRecordings = recordingData.recordings.length > 0;
   const editorDirty = editorContent !== lastSavedContent;
   const userInitials = useMemo(() => buildInitials(activeUser), [activeUser]);
@@ -447,6 +472,42 @@ export default function App() {
     setUserProfile(profile);
     setApiKeyTestMessage(null);
     return profile;
+  };
+
+  const refreshSetupStatus = async (
+    usernameOverride?: string,
+    options?: { silent?: boolean }
+  ) => {
+    const username = usernameOverride || activeUser;
+    if (!username) return null;
+
+    const silent = options?.silent === true;
+    try {
+      if (!silent) setIsLoadingSetupStatus(true);
+      const status = await window.fastChapter.getSetupStatus({ username });
+      setSetupStatus(status);
+      return status;
+    } finally {
+      if (!silent) setIsLoadingSetupStatus(false);
+    }
+  };
+
+  const refreshPromptLibrary = async (
+    usernameOverride?: string,
+    options?: { silent?: boolean }
+  ) => {
+    const username = usernameOverride || activeUser;
+    if (!username) return null;
+
+    const silent = options?.silent === true;
+    try {
+      if (!silent) setIsLoadingPromptLibrary(true);
+      const library = await window.fastChapter.listPromptTemplates({ username });
+      setPromptLibrary(library);
+      return library;
+    } finally {
+      if (!silent) setIsLoadingPromptLibrary(false);
+    }
   };
 
   const refreshWorkspaceData = async (username: string, bookId: string, keepSelectedPath = true) => {
@@ -500,12 +561,44 @@ export default function App() {
 
   useEffect(() => {
     if (!activeUser) return;
-    Promise.all([refreshBooks(activeUser), refreshProfile(activeUser)])
-      .then(() => setScreen("bookshelf"))
+    let cancelled = false;
+
+    Promise.all([
+      refreshBooks(activeUser),
+      refreshProfile(activeUser),
+      refreshSetupStatus(activeUser, { silent: true }),
+      refreshPromptLibrary(activeUser, { silent: true })
+    ])
+      .then(([, , setup]) => {
+        if (cancelled) return;
+        setScreen(setup?.ready ? "bookshelf" : "setup");
+      })
       .catch((error: unknown) => {
+        if (cancelled) return;
         setNotice({ tone: "error", text: String(error) });
       });
+
+    return () => {
+      cancelled = true;
+    };
   }, [activeUser]);
+
+  useEffect(() => {
+    if (!promptLibrary?.prompts?.length) return;
+    const exists = promptLibrary.prompts.some((group) => group.promptKey === selectedPromptKey);
+    if (exists) return;
+
+    const firstGroup = promptLibrary.prompts[0];
+    setSelectedPromptKey(firstGroup.promptKey as PromptTemplateKey);
+  }, [promptLibrary, selectedPromptKey]);
+
+  useEffect(() => {
+    if (!selectedPromptGroup) return;
+    if (newPromptVariantContent.trim().length > 0) return;
+
+    const defaultTemplate = selectedPromptGroup.templates.find((template) => template.source === "default");
+    setNewPromptVariantContent(defaultTemplate?.content || "");
+  }, [selectedPromptGroup, newPromptVariantContent]);
 
   useEffect(() => {
     if (!activeUser || !selectedBook) return;
@@ -639,6 +732,7 @@ export default function App() {
     setSelectedExplorerPaths([]);
     setExplorerSelectionAnchorPath(null);
     setIsWriteBookDialogOpen(false);
+    setIsExportDialogOpen(false);
   }, [screen]);
 
   useEffect(() => {
@@ -855,6 +949,41 @@ export default function App() {
       }
     } catch (error) {
       setNotice({ tone: "error", text: String(error) });
+    }
+  };
+
+  const handleOpenExportDialog = () => {
+    setExportIncludeTranscriptions(false);
+    setExportIncludeRecordings(false);
+    setIsExportDialogOpen(true);
+  };
+
+  const handleExportBookArchive = async () => {
+    if (!activeUser || !selectedBook) return;
+
+    try {
+      setIsExportingBook(true);
+      const result = await window.fastChapter.exportBookArchive({
+        username: activeUser,
+        bookId: selectedBook.id,
+        includeRecordings: exportIncludeRecordings,
+        includeTranscriptions: exportIncludeTranscriptions
+      });
+
+      if (result.cancelled) {
+        setNotice({ tone: "info", text: "Export cancelled." });
+        return;
+      }
+
+      setNotice({
+        tone: "success",
+        text: `Exported ${result.fileCount} file(s) to ${result.outputPath || "selected path"}.`
+      });
+      setIsExportDialogOpen(false);
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setIsExportingBook(false);
     }
   };
 
@@ -1807,6 +1936,117 @@ export default function App() {
     handleOpenWriteBookDialog();
   };
 
+  const handleOpenSetup = () => {
+    setScreen("setup");
+    void refreshSetupStatus(undefined, { silent: true });
+  };
+
+  const handleOpenPersonalization = () => {
+    setScreen("personalization");
+    void refreshPromptLibrary(undefined, { silent: false });
+  };
+
+  const handleSelectPromptKey = (promptKey: PromptTemplateKey) => {
+    setSelectedPromptKey(promptKey);
+    const group = promptLibrary?.prompts.find((item) => item.promptKey === promptKey);
+    const defaultTemplate = group?.templates.find((template) => template.source === "default");
+    setNewPromptVariantName("");
+    setNewPromptVariantContent(defaultTemplate?.content || "");
+  };
+
+  const handleCreatePromptVariant = async () => {
+    if (!activeUser || !selectedPromptGroup) return;
+
+    const name = newPromptVariantName.trim();
+    const content = newPromptVariantContent.trim();
+    if (!name) {
+      setNotice({ tone: "error", text: "Enter a name for the prompt variant." });
+      return;
+    }
+    if (!content) {
+      setNotice({ tone: "error", text: "Prompt content cannot be empty." });
+      return;
+    }
+
+    try {
+      setIsCreatingPromptVariant(true);
+      await window.fastChapter.createPromptTemplateVariant({
+        username: activeUser,
+        promptKey: selectedPromptGroup.promptKey,
+        name,
+        content
+      });
+      await refreshPromptLibrary(activeUser, { silent: true });
+      setNewPromptVariantName("");
+      setNotice({ tone: "success", text: "Prompt variant created." });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setIsCreatingPromptVariant(false);
+    }
+  };
+
+  const handleSetActivePromptTemplate = async (group: PromptTemplateGroup, templateId: string) => {
+    if (!activeUser) return;
+
+    try {
+      setIsApplyingPromptVariant(true);
+      await window.fastChapter.setActivePromptTemplate({
+        username: activeUser,
+        promptKey: group.promptKey,
+        templateId
+      });
+      await refreshPromptLibrary(activeUser, { silent: true });
+      setNotice({ tone: "success", text: `${group.label} active template updated.` });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setIsApplyingPromptVariant(false);
+    }
+  };
+
+  const handleDeletePromptVariant = async (group: PromptTemplateGroup, templateId: string) => {
+    if (!activeUser) return;
+
+    try {
+      setIsDeletingPromptVariant(true);
+      await window.fastChapter.deletePromptTemplateVariant({
+        username: activeUser,
+        promptKey: group.promptKey,
+        templateId
+      });
+      await refreshPromptLibrary(activeUser, { silent: true });
+      setNotice({ tone: "info", text: "Prompt variant deleted." });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setIsDeletingPromptVariant(false);
+    }
+  };
+
+  const handleOpenExternalUrl = async (url: string) => {
+    try {
+      await window.fastChapter.openExternalUrl({ url });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    }
+  };
+
+  const handleRefreshSetupStatus = async () => {
+    if (!activeUser) return;
+
+    try {
+      const status = await refreshSetupStatus(activeUser);
+      if (status?.ready) {
+        setNotice({ tone: "success", text: "Setup checks passed. You can continue to your bookshelf." });
+      } else {
+        setNotice({ tone: "info", text: "Setup checks refreshed." });
+      }
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    }
+  };
+
   const handleSaveApiKey = async () => {
     if (!activeUser) return;
 
@@ -1826,6 +2066,7 @@ export default function App() {
       setOpenAiApiKeyInput("");
       setApiKeyTestMessage(null);
       setNotice({ tone: "success", text: "OpenAI API key saved locally." });
+      await refreshSetupStatus(activeUser, { silent: true });
     } catch (error) {
       setNotice({ tone: "error", text: String(error) });
     } finally {
@@ -1846,6 +2087,7 @@ export default function App() {
       setOpenAiApiKeyInput("");
       setApiKeyTestMessage(null);
       setNotice({ tone: "info", text: "OpenAI API key removed." });
+      await refreshSetupStatus(activeUser, { silent: true });
     } catch (error) {
       setNotice({ tone: "error", text: String(error) });
     } finally {
@@ -1893,6 +2135,10 @@ export default function App() {
   const handleOpenProfile = () => {
     if (screen === "workspace") {
       setProfileReturnScreen("workspace");
+    } else if (screen === "personalization") {
+      setProfileReturnScreen("personalization");
+    } else if (screen === "setup") {
+      setProfileReturnScreen("setup");
     } else {
       setProfileReturnScreen("bookshelf");
     }
@@ -1910,6 +2156,22 @@ export default function App() {
           >
             <Settings className="h-4 w-4" />
             Profile & Settings
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenSetup}
+            className="mt-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition hover:bg-accent/70"
+          >
+            <ListChecks className="h-4 w-4" />
+            Setup
+          </button>
+          <button
+            type="button"
+            onClick={handleOpenPersonalization}
+            className="mt-1 flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm transition hover:bg-accent/70"
+          >
+            <FileText className="h-4 w-4" />
+            Personalization
           </button>
           <button
             type="button"
@@ -1976,6 +2238,380 @@ export default function App() {
     );
   }
 
+  if (screen === "setup") {
+    const setupChecks = setupStatus?.checks;
+    const isWindows = /windows/i.test(window.navigator.userAgent);
+
+    return (
+      <main className="min-h-screen bg-background px-6 py-6 text-foreground">
+        <section className="mx-auto flex w-full max-w-[1300px] flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-card/70 px-4 py-4">
+          <div>
+            <h1 className="font-serif text-3xl">Setup</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Confirm required tools and credentials before continuing to your bookshelf.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={handleRefreshSetupStatus} disabled={isLoadingSetupStatus}>
+              {isLoadingSetupStatus ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4" />}
+              Recheck
+            </Button>
+            <Button variant={setupStatus?.ready ? "default" : "secondary"} onClick={() => setScreen("bookshelf")}>
+              Open Bookshelf
+            </Button>
+          </div>
+        </section>
+
+        <section className="mx-auto mt-4 grid w-full max-w-[1300px] grid-cols-1 gap-4 lg:grid-cols-2">
+          <Card className="border-border/70 bg-card/65">
+            <CardHeader>
+              <CardTitle className="text-base">OpenAI Key</CardTitle>
+              <CardDescription>Needed for transcription and as fallback auth for Codex sessions.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Badge variant={setupChecks?.openai.ok ? "success" : "secondary"}>
+                {setupChecks?.openai.ok ? "Configured" : "Not configured"}
+              </Badge>
+              <p className="text-xs text-muted-foreground">{setupChecks?.openai.message || "Checking setup..."}</p>
+
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
+                <Input
+                  type="password"
+                  value={openAiApiKeyInput}
+                  onChange={(event) => setOpenAiApiKeyInput(event.target.value)}
+                  placeholder={setupChecks?.openai.hasSavedKey ? "Enter new key to replace current one" : "sk-..."}
+                />
+                <Button onClick={handleSaveApiKey} disabled={isSavingApiKey}>
+                  {isSavingApiKey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <KeyRound className="mr-2 h-4 w-4" />}
+                  Save
+                </Button>
+                <Button variant="outline" onClick={handleTestApiKey} disabled={isTestingApiKey}>
+                  {isTestingApiKey ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Test
+                </Button>
+                <Button variant="outline" onClick={handleClearApiKey} disabled={isSavingApiKey}>
+                  Clear
+                </Button>
+              </div>
+
+              {apiKeyTestMessage && (
+                <p className="rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                  {apiKeyTestMessage}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/70 bg-card/65">
+            <CardHeader>
+              <CardTitle className="text-base">Codex CLI</CardTitle>
+              <CardDescription>Required for Write Book generation flows.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Badge variant={setupChecks?.codex.ok ? "success" : "secondary"}>
+                {setupChecks?.codex.ok ? "Ready" : "Needs setup"}
+              </Badge>
+              <p className="text-xs text-muted-foreground">{setupChecks?.codex.message || "Checking setup..."}</p>
+              {setupChecks?.codex.version ? (
+                <p className="text-xs text-muted-foreground">Version: {setupChecks.codex.version}</p>
+              ) : null}
+              {!setupChecks?.codex.installed ? (
+                <div className="space-y-2">
+                  <p className="rounded-md border border-border bg-muted/20 px-2 py-1 font-mono text-[11px]">
+                    npm i -g @openai/codex
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleOpenExternalUrl("https://www.npmjs.com/package/@openai/codex")}
+                  >
+                    Open Install Page
+                  </Button>
+                </div>
+              ) : !setupChecks?.codex.authenticated && !setupChecks?.openai.hasSavedKey ? (
+                <div className="space-y-2">
+                  <p className="rounded-md border border-border bg-muted/20 px-2 py-1 font-mono text-[11px]">
+                    codex login
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleOpenExternalUrl("https://www.npmjs.com/package/@openai/codex")}
+                  >
+                    Open Codex CLI Guide
+                  </Button>
+                </div>
+              ) : null}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/70 bg-card/65">
+            <CardHeader>
+              <CardTitle className="text-base">LaTeX Toolchain</CardTitle>
+              <CardDescription>Needed for PDF preview and compile actions (`latexmk` or `pdflatex`).</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Badge variant={setupChecks?.latex.ok ? "success" : "secondary"}>
+                {setupChecks?.latex.ok ? "Ready" : "Needs setup"}
+              </Badge>
+              <p className="text-xs text-muted-foreground">{setupChecks?.latex.message || "Checking setup..."}</p>
+              {setupChecks?.latex.available ? (
+                <p className="text-xs text-muted-foreground">
+                  Detected: {setupChecks.latex.latexmkInstalled ? "latexmk" : ""}{" "}
+                  {setupChecks.latex.pdflatexInstalled ? "pdflatex" : ""}
+                </p>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      handleOpenExternalUrl(
+                        isWindows ? "https://miktex.org/download" : "https://www.tug.org/texlive/"
+                      )
+                    }
+                  >
+                    Open {isWindows ? "MiKTeX" : "TeX Live"} Installer
+                  </Button>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card className="border-border/70 bg-card/65">
+            <CardHeader>
+              <CardTitle className="text-base">Node/npm</CardTitle>
+              <CardDescription>Needed for project tooling and local command workflows.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <Badge variant={setupChecks?.npm.ok ? "success" : "secondary"}>
+                {setupChecks?.npm.ok ? "Ready" : "Needs setup"}
+              </Badge>
+              <p className="text-xs text-muted-foreground">{setupChecks?.npm.message || "Checking setup..."}</p>
+              {!setupChecks?.npm.installed ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => handleOpenExternalUrl("https://nodejs.org/en/download")}
+                >
+                  Open Node.js Download
+                </Button>
+              ) : null}
+            </CardContent>
+          </Card>
+        </section>
+
+        {notice && (
+          <div
+            className={`fixed bottom-5 left-5 rounded-md border px-3 py-2 text-sm shadow-lg ${
+              notice.tone === "error"
+                ? "border-rose-600/50 bg-rose-950/70 text-rose-100"
+                : notice.tone === "success"
+                  ? "border-emerald-600/50 bg-emerald-900/60 text-emerald-100"
+                  : "border-sky-500/50 bg-sky-900/60 text-sky-100"
+            }`}
+          >
+            {notice.text}
+          </div>
+        )}
+        {profileLauncher}
+      </main>
+    );
+  }
+
+  if (screen === "personalization") {
+    const promptGroups = promptLibrary?.prompts || [];
+    const activeGroup = selectedPromptGroup || promptGroups[0] || null;
+    const defaultTemplate = activeGroup?.templates.find((template) => template.source === "default") || null;
+
+    return (
+      <main className="min-h-screen bg-background px-6 py-6 text-foreground">
+        <section className="mx-auto flex w-full max-w-[1300px] items-center justify-between gap-4 rounded-xl border border-border/60 bg-card/70 px-4 py-3 shadow-sm">
+          <div>
+            <h1 className="font-serif text-3xl">Personalization</h1>
+            <p className="text-sm text-muted-foreground">
+              Create your own prompt variants, keep defaults read-only, and choose which version is active.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              onClick={() => {
+                void refreshPromptLibrary();
+              }}
+              disabled={isLoadingPromptLibrary}
+            >
+              {isLoadingPromptLibrary ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCcw className="mr-2 h-4 w-4" />}
+              Refresh
+            </Button>
+            <Button variant="outline" onClick={() => setScreen("bookshelf")}>
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              Back
+            </Button>
+          </div>
+        </section>
+
+        <section className="mx-auto mt-4 grid w-full max-w-[1300px] grid-cols-1 gap-4 lg:grid-cols-[260px_1fr]">
+          <Card className="border-border/70 bg-card/65">
+            <CardHeader>
+              <CardTitle className="text-base">Prompt Groups</CardTitle>
+              <CardDescription>Select a prompt file to manage variants.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {promptGroups.map((group) => {
+                const activeTemplate = group.templates.find((template) => template.id === group.activeTemplateId);
+                return (
+                  <button
+                    key={group.promptKey}
+                    type="button"
+                    onClick={() => handleSelectPromptKey(group.promptKey)}
+                    className={`w-full rounded-md border px-3 py-2 text-left text-xs ${
+                      selectedPromptKey === group.promptKey
+                        ? "border-primary/60 bg-primary/10 text-primary"
+                        : "border-border/70 bg-background/40 hover:bg-accent/60"
+                    }`}
+                  >
+                    <p className="font-medium">{group.label}</p>
+                    <p className="mt-1 text-muted-foreground">Active: {activeTemplate?.name || "Default"}</p>
+                  </button>
+                );
+              })}
+              {promptGroups.length === 0 && (
+                <p className="text-xs text-muted-foreground">
+                  {isLoadingPromptLibrary ? "Loading prompts..." : "No prompt metadata found."}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+
+          <div className="space-y-4">
+            <Card className="border-border/70 bg-card/65">
+              <CardHeader>
+                <CardTitle className="text-base">Default Template</CardTitle>
+                <CardDescription>
+                  This is the built-in prompt and cannot be edited or deleted.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-56 rounded-md border border-border/70 bg-background/40 p-3">
+                  <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed">
+                    {defaultTemplate?.content || "Select a prompt group to view the default template."}
+                  </pre>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/70 bg-card/65">
+              <CardHeader>
+                <CardTitle className="text-base">Available Variants</CardTitle>
+                <CardDescription>Choose an active prompt variant for this group.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {activeGroup?.templates.map((template) => {
+                  const isActive = activeGroup.activeTemplateId === template.id;
+                  return (
+                    <div key={template.id} className="rounded-md border border-border/70 bg-background/40 px-3 py-2 text-xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium">{template.name}</p>
+                          <Badge variant={template.source === "default" ? "secondary" : "outline"}>
+                            {template.source}
+                          </Badge>
+                          {isActive ? <Badge variant="success">active</Badge> : null}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          {!isActive && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-xs"
+                              disabled={isApplyingPromptVariant}
+                              onClick={() => void handleSetActivePromptTemplate(activeGroup, template.id)}
+                            >
+                              Use
+                            </Button>
+                          )}
+                          {template.source === "custom" && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-7 text-xs text-rose-300 hover:bg-rose-500/20"
+                              disabled={isDeletingPromptVariant}
+                              onClick={() => void handleDeletePromptVariant(activeGroup, template.id)}
+                            >
+                              Delete
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-muted-foreground">
+                        {template.content.slice(0, 180) || "(empty)"}
+                      </p>
+                    </div>
+                  );
+                })}
+                {!activeGroup && (
+                  <p className="text-xs text-muted-foreground">
+                    {isLoadingPromptLibrary ? "Loading variants..." : "No prompt group selected."}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="border-border/70 bg-card/65">
+              <CardHeader>
+                <CardTitle className="text-base">Create Variant</CardTitle>
+                <CardDescription>Create a custom version based on the selected prompt group.</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="space-y-2">
+                  <Label htmlFor="prompt-variant-name">Variant name</Label>
+                  <Input
+                    id="prompt-variant-name"
+                    value={newPromptVariantName}
+                    onChange={(event) => setNewPromptVariantName(event.target.value)}
+                    placeholder="My concise style"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="prompt-variant-content">Prompt content</Label>
+                  <Textarea
+                    id="prompt-variant-content"
+                    value={newPromptVariantContent}
+                    onChange={(event) => setNewPromptVariantContent(event.target.value)}
+                    className="min-h-52 font-mono text-[12px]"
+                    placeholder="Write your custom prompt variant..."
+                  />
+                </div>
+                <div className="flex items-center justify-end">
+                  <Button onClick={() => void handleCreatePromptVariant()} disabled={!activeGroup || isCreatingPromptVariant}>
+                    {isCreatingPromptVariant ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                    Save Variant
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        </section>
+
+        {notice && (
+          <div
+            className={`fixed bottom-5 left-5 rounded-md border px-3 py-2 text-sm shadow-lg ${
+              notice.tone === "error"
+                ? "border-rose-600/50 bg-rose-950/70 text-rose-100"
+                : notice.tone === "success"
+                  ? "border-emerald-600/50 bg-emerald-900/60 text-emerald-100"
+                  : "border-sky-500/50 bg-sky-900/60 text-sky-100"
+            }`}
+          >
+            {notice.text}
+          </div>
+        )}
+        {profileLauncher}
+      </main>
+    );
+  }
+
   if (screen === "bookshelf") {
     return (
       <main className="min-h-screen bg-background px-6 py-6 text-foreground">
@@ -1990,6 +2626,14 @@ export default function App() {
             <Badge variant="secondary" className="rounded-md px-3 py-1 text-xs uppercase tracking-wider">
               Local account
             </Badge>
+            <Button variant="outline" onClick={handleOpenSetup}>
+              <Settings className="mr-2 h-4 w-4" />
+              Setup
+            </Button>
+            <Button variant="outline" onClick={handleOpenPersonalization}>
+              <FileText className="mr-2 h-4 w-4" />
+              Personalization
+            </Button>
             <Button onClick={() => setIsCreateBookOpen(true)}>
               <Plus className="mr-2 h-4 w-4" />
               New Book
@@ -2243,6 +2887,10 @@ export default function App() {
         </Button>
         <Button variant={isVoicePaneOpen ? "outline" : "ghost"} size="sm" onClick={() => setIsVoicePaneOpen((current) => !current)}>
           Voice Pane ({isVoicePaneOpen ? "On" : "Off"})
+        </Button>
+        <Button variant="ghost" size="sm" onClick={handleOpenExportDialog}>
+          <Download className="mr-2 h-4 w-4" />
+          Export
         </Button>
 
         <div className="ml-auto flex items-center gap-2 text-xs">
@@ -2651,6 +3299,59 @@ export default function App() {
             </Button>
             <Button onClick={handleSubmitExplorerEntryDialog}>
               Save
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={isExportDialogOpen}
+        onOpenChange={(open) => {
+          if (!isExportingBook) {
+            setIsExportDialogOpen(open);
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Download className="h-4 w-4" />
+              Export Book ZIP
+            </DialogTitle>
+            <DialogDescription>
+              Choose optional folders to include before selecting where to save the archive.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <label className="flex items-center gap-2 rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={exportIncludeTranscriptions}
+                onChange={(event) => setExportIncludeTranscriptions(event.target.checked)}
+                className="h-4 w-4 rounded border-border bg-background"
+              />
+              Include `transcriptions/`
+            </label>
+            <label className="flex items-center gap-2 rounded-md border border-border/70 bg-muted/20 px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={exportIncludeRecordings}
+                onChange={(event) => setExportIncludeRecordings(event.target.checked)}
+                className="h-4 w-4 rounded border-border bg-background"
+              />
+              Include `recordings/`
+            </label>
+            <p className="text-xs text-muted-foreground">
+              Both options are off by default. If left unchecked, those folders are excluded from the ZIP.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsExportDialogOpen(false)} disabled={isExportingBook}>
+              Cancel
+            </Button>
+            <Button onClick={handleExportBookArchive} disabled={isExportingBook}>
+              {isExportingBook ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+              Export ZIP
             </Button>
           </DialogFooter>
         </DialogContent>

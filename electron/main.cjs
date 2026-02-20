@@ -2,7 +2,7 @@ const path = require("node:path");
 const fs = require("node:fs/promises");
 const crypto = require("node:crypto");
 const { spawn } = require("node:child_process");
-const { app, BrowserWindow, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { v4: uuidv4 } = require("uuid");
 
 const USERS_DIR = "users";
@@ -38,10 +38,18 @@ const CODEX_PROMPT_FILES = {
   nextChapter: "write-next-chapter.md",
   verifyMainTex: "verify-main-tex.md"
 };
+const CODEX_PROMPT_LABELS = {
+  bookContext: "Book Context",
+  firstChapter: "Write First Chapter",
+  nextChapter: "Write Next Chapter",
+  verifyMainTex: "Verify main.tex"
+};
+const DEFAULT_PROMPT_TEMPLATE_ID = "default";
 const CODEX_PROMPTS_ROOT = path.join(__dirname, "..", "prompts");
 const WRITE_BOOK_LOG_LINE_LIMIT = 2500;
 const WRITE_BOOK_LOG_LINE_LENGTH_LIMIT = 1200;
 const WRITE_BOOK_POLL_LOG_LIMIT = 200;
+const EXPORT_ARCHIVE_TIMEOUT_MS = 4 * 60 * 1000;
 
 const transcriptionJobs = new Map();
 const latexCompileCache = new Map();
@@ -314,6 +322,249 @@ async function updateUserProfile(payload) {
   return sanitizeProfileForRenderer(profile);
 }
 
+function getPromptCustomizationsPath(username) {
+  return path.join(getUserRoot(username), "prompt-customizations.json");
+}
+
+function normalizePromptTemplateKey(value) {
+  const key = String(value || "").trim();
+  return Object.prototype.hasOwnProperty.call(CODEX_PROMPT_FILES, key) ? key : "";
+}
+
+function normalizePromptCustomizations(raw) {
+  const now = new Date().toISOString();
+  const source = isObject(raw) ? raw : {};
+  const activeInput = isObject(source.activeTemplateIds) ? source.activeTemplateIds : {};
+  const variantsInput = Array.isArray(source.variants) ? source.variants : [];
+
+  const activeTemplateIds = {};
+  Object.keys(CODEX_PROMPT_FILES).forEach((key) => {
+    const activeId = String(activeInput[key] || "").trim();
+    activeTemplateIds[key] = activeId || DEFAULT_PROMPT_TEMPLATE_ID;
+  });
+
+  const variants = variantsInput
+    .filter((item) => isObject(item))
+    .map((item) => {
+      const promptKey = normalizePromptTemplateKey(item.promptKey);
+      const id = String(item.id || "").trim();
+      const name = String(item.name || "").trim();
+      const content = String(item.content || "");
+
+      if (!promptKey || !id || !name) return null;
+
+      return {
+        id,
+        promptKey,
+        name: name.slice(0, 80),
+        content,
+        createdAt: typeof item.createdAt === "string" ? item.createdAt : now,
+        updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : now
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    createdAt: typeof source.createdAt === "string" ? source.createdAt : now,
+    updatedAt: typeof source.updatedAt === "string" ? source.updatedAt : now,
+    activeTemplateIds,
+    variants
+  };
+}
+
+async function readPromptCustomizationsPrivate(usernameRaw) {
+  const username = normalizeUserName(usernameRaw);
+  if (!username) {
+    throw new Error("Invalid username.");
+  }
+
+  await ensureUser(username);
+  const filePath = getPromptCustomizationsPath(username);
+
+  try {
+    const current = await readJson(filePath);
+    const normalized = normalizePromptCustomizations(current);
+    await writeJson(filePath, normalized);
+    return normalized;
+  } catch {
+    const normalized = normalizePromptCustomizations({});
+    await writeJson(filePath, normalized);
+    return normalized;
+  }
+}
+
+async function readDefaultPromptTemplates() {
+  const readPrompt = async (fileName) =>
+    readTextOrEmpty(path.join(CODEX_PROMPTS_ROOT, fileName)).then((value) => value.trim());
+
+  return {
+    bookContext: await readPrompt(CODEX_PROMPT_FILES.bookContext),
+    firstChapter: await readPrompt(CODEX_PROMPT_FILES.firstChapter),
+    nextChapter: await readPrompt(CODEX_PROMPT_FILES.nextChapter),
+    verifyMainTex: await readPrompt(CODEX_PROMPT_FILES.verifyMainTex)
+  };
+}
+
+async function listPromptTemplates(usernameRaw) {
+  const username = normalizeUserName(usernameRaw);
+  const [defaults, customizations] = await Promise.all([
+    readDefaultPromptTemplates(),
+    readPromptCustomizationsPrivate(username)
+  ]);
+
+  const prompts = Object.keys(CODEX_PROMPT_FILES).map((promptKey) => {
+    const defaultTemplate = {
+      id: DEFAULT_PROMPT_TEMPLATE_ID,
+      name: "Default",
+      source: "default",
+      content: defaults[promptKey] || "",
+      createdAt: null,
+      updatedAt: null
+    };
+
+    const customTemplates = customizations.variants
+      .filter((variant) => variant.promptKey === promptKey)
+      .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)))
+      .map((variant) => ({
+        id: variant.id,
+        name: variant.name,
+        source: "custom",
+        content: variant.content,
+        createdAt: variant.createdAt,
+        updatedAt: variant.updatedAt
+      }));
+
+    const templates = [defaultTemplate, ...customTemplates];
+    const activeTemplateId = String(customizations.activeTemplateIds[promptKey] || DEFAULT_PROMPT_TEMPLATE_ID);
+    const hasActiveCustom = templates.some((template) => template.id === activeTemplateId);
+    const resolvedActiveTemplateId = hasActiveCustom ? activeTemplateId : DEFAULT_PROMPT_TEMPLATE_ID;
+
+    return {
+      promptKey,
+      label: CODEX_PROMPT_LABELS[promptKey] || promptKey,
+      activeTemplateId: resolvedActiveTemplateId,
+      templates
+    };
+  });
+
+  return {
+    generatedAt: new Date().toISOString(),
+    prompts
+  };
+}
+
+async function createPromptTemplateVariant(payload) {
+  const username = normalizeUserName(payload.username);
+  const promptKey = normalizePromptTemplateKey(payload.promptKey);
+  if (!promptKey) {
+    throw new Error("Invalid prompt key.");
+  }
+
+  const name = String(payload.name || "").trim();
+  if (!name) {
+    throw new Error("Template name is required.");
+  }
+
+  const content = String(payload.content || "").trim();
+  if (!content) {
+    throw new Error("Template content is required.");
+  }
+
+  const customizations = await readPromptCustomizationsPrivate(username);
+  const now = new Date().toISOString();
+  const variant = {
+    id: uuidv4(),
+    promptKey,
+    name: name.slice(0, 80),
+    content,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  customizations.variants.push(variant);
+  customizations.updatedAt = now;
+  await writeJson(getPromptCustomizationsPath(username), customizations);
+
+  return {
+    promptKey,
+    template: {
+      id: variant.id,
+      name: variant.name,
+      source: "custom",
+      content: variant.content,
+      createdAt: variant.createdAt,
+      updatedAt: variant.updatedAt
+    }
+  };
+}
+
+async function deletePromptTemplateVariant(payload) {
+  const username = normalizeUserName(payload.username);
+  const promptKey = normalizePromptTemplateKey(payload.promptKey);
+  if (!promptKey) {
+    throw new Error("Invalid prompt key.");
+  }
+
+  const templateId = String(payload.templateId || "").trim();
+  if (!templateId || templateId === DEFAULT_PROMPT_TEMPLATE_ID) {
+    throw new Error("Default template cannot be deleted.");
+  }
+
+  const customizations = await readPromptCustomizationsPrivate(username);
+  const index = customizations.variants.findIndex(
+    (variant) => variant.promptKey === promptKey && variant.id === templateId
+  );
+  if (index < 0) {
+    throw new Error("Template not found.");
+  }
+
+  customizations.variants.splice(index, 1);
+  if (customizations.activeTemplateIds[promptKey] === templateId) {
+    customizations.activeTemplateIds[promptKey] = DEFAULT_PROMPT_TEMPLATE_ID;
+  }
+  customizations.updatedAt = new Date().toISOString();
+  await writeJson(getPromptCustomizationsPath(username), customizations);
+
+  return {
+    ok: true,
+    promptKey,
+    activeTemplateId: customizations.activeTemplateIds[promptKey]
+  };
+}
+
+async function setActivePromptTemplate(payload) {
+  const username = normalizeUserName(payload.username);
+  const promptKey = normalizePromptTemplateKey(payload.promptKey);
+  if (!promptKey) {
+    throw new Error("Invalid prompt key.");
+  }
+
+  const templateId = String(payload.templateId || "").trim();
+  if (!templateId) {
+    throw new Error("Template id is required.");
+  }
+
+  const customizations = await readPromptCustomizationsPrivate(username);
+  if (templateId !== DEFAULT_PROMPT_TEMPLATE_ID) {
+    const exists = customizations.variants.some(
+      (variant) => variant.promptKey === promptKey && variant.id === templateId
+    );
+    if (!exists) {
+      throw new Error("Template not found.");
+    }
+  }
+
+  customizations.activeTemplateIds[promptKey] = templateId;
+  customizations.updatedAt = new Date().toISOString();
+  await writeJson(getPromptCustomizationsPath(username), customizations);
+
+  return {
+    ok: true,
+    promptKey,
+    activeTemplateId: templateId
+  };
+}
+
 async function parseOpenAIError(response) {
   const raw = await response.text();
   try {
@@ -405,6 +656,40 @@ async function runCommand(command, args, cwd, timeoutMs = LATEX_COMPILE_TIMEOUT_
 
 function getCodexCommandCandidates() {
   return process.platform === "win32" ? ["codex", "codex.cmd"] : ["codex"];
+}
+
+function getCommandCandidates(command) {
+  if (process.platform !== "win32") return [command];
+  return [command, `${command}.cmd`];
+}
+
+async function checkCommandAvailability(commandCandidates, args, timeoutMs = 15000) {
+  let lastError = "";
+
+  for (const command of commandCandidates) {
+    try {
+      const result = await runCommand(command, args, process.cwd(), timeoutMs);
+      const output = sanitizeLogLine(`${result.stdout}\n${result.stderr}`).trim();
+      if (result.code === 0) {
+        return {
+          installed: true,
+          command,
+          output,
+          message: output || `${command} ${args.join(" ")} succeeded.`
+        };
+      }
+      lastError = trimLogTail(output || `${command} ${args.join(" ")} failed with code ${result.code}.`);
+    } catch (error) {
+      lastError = String(error instanceof Error ? error.message : error);
+    }
+  }
+
+  return {
+    installed: false,
+    command: null,
+    output: "",
+    message: lastError || `${commandCandidates[0]} is not available on PATH.`
+  };
 }
 
 async function resolveCodexCommand() {
@@ -1134,6 +1419,205 @@ async function listFilesRecursive(rootDir, relativePrefix = "") {
   return output;
 }
 
+function sanitizeArchiveName(value) {
+  const cleaned = String(value || "")
+    .trim()
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-")
+    .replace(/\s+/g, " ")
+    .replace(/-+/g, "-")
+    .replace(/^\.+/, "")
+    .trim();
+
+  const fallback = cleaned || "book-export";
+  return fallback.slice(0, 80);
+}
+
+function shouldIncludeTopLevelExportDirectory(name, options) {
+  if (name === "recordings" && !options.includeRecordings) return false;
+  if (name === "transcriptions" && !options.includeTranscriptions) return false;
+  return true;
+}
+
+async function collectBookExportFiles(bookRoot, options) {
+  const output = [];
+
+  const walk = async (currentAbsolutePath, relativePrefix) => {
+    const entries = await fs.readdir(currentAbsolutePath, { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+
+    for (const entry of entries) {
+      const absolutePath = path.join(currentAbsolutePath, entry.name);
+      const relativePath = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+
+      if (entry.isDirectory()) {
+        if (!relativePrefix && !shouldIncludeTopLevelExportDirectory(entry.name, options)) {
+          continue;
+        }
+        await walk(absolutePath, relativePath);
+        continue;
+      }
+
+      if (entry.isFile()) {
+        output.push({ absolutePath, relativePath });
+      }
+    }
+  };
+
+  await walk(bookRoot, "");
+  return output;
+}
+
+function quotePowerShellLiteral(value) {
+  return `'${String(value || "").replaceAll("'", "''")}'`;
+}
+
+async function createZipArchive({ stagingRoot, archiveFolderName, outputPath }) {
+  if (process.platform === "win32") {
+    const script = [
+      "$ErrorActionPreference = 'Stop'",
+      `Compress-Archive -Path ${quotePowerShellLiteral(path.join(stagingRoot, archiveFolderName))} -DestinationPath ${quotePowerShellLiteral(outputPath)} -Force`
+    ].join("; ");
+    const result = await runCommand(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+      process.cwd(),
+      EXPORT_ARCHIVE_TIMEOUT_MS
+    );
+    if (result.code !== 0) {
+      throw new Error(trimLogTail(result.stderr || result.stdout || "Compress-Archive failed."));
+    }
+    return;
+  }
+
+  let zipFailure = "";
+  try {
+    const zipResult = await runCommand(
+      "zip",
+      ["-r", "-q", outputPath, archiveFolderName],
+      stagingRoot,
+      EXPORT_ARCHIVE_TIMEOUT_MS
+    );
+    if (zipResult.code === 0) {
+      return;
+    }
+    zipFailure = trimLogTail(zipResult.stderr || zipResult.stdout || "zip command failed.");
+  } catch (error) {
+    zipFailure = String(error instanceof Error ? error.message : error);
+  }
+
+  if (process.platform === "darwin") {
+    const dittoResult = await runCommand(
+      "ditto",
+      ["-c", "-k", "--sequesterRsrc", "--keepParent", archiveFolderName, outputPath],
+      stagingRoot,
+      EXPORT_ARCHIVE_TIMEOUT_MS
+    ).catch((error) => ({
+      code: -1,
+      stdout: "",
+      stderr: String(error instanceof Error ? error.message : error)
+    }));
+
+    if (dittoResult.code === 0) {
+      return;
+    }
+
+    const dittoFailure = trimLogTail(dittoResult.stderr || dittoResult.stdout || "ditto command failed.");
+    throw new Error(`Unable to create ZIP archive. zip: ${zipFailure || "failed"}. ditto: ${dittoFailure}`);
+  }
+
+  throw new Error(`Unable to create ZIP archive. ${zipFailure || "zip command not available."}`);
+}
+
+async function exportBookArchive(payload) {
+  const username = normalizeUserName(payload.username);
+  const { bookId } = payload;
+  const includeRecordings = payload.includeRecordings === true;
+  const includeTranscriptions = payload.includeTranscriptions === true;
+
+  const bookRoot = getBookRoot(username, bookId);
+  await assertBookExists(bookRoot, bookId);
+
+  let bookTitle = `book-${bookId}`;
+  try {
+    const metadata = await readJson(path.join(bookRoot, "book.json"));
+    if (metadata?.title) {
+      bookTitle = String(metadata.title);
+    }
+  } catch {
+    // Ignore malformed metadata and keep fallback title.
+  }
+
+  const archiveBaseName = sanitizeArchiveName(bookTitle);
+  const suggestedPath = path.join(app.getPath("downloads"), `${archiveBaseName}.zip`);
+  const saveResult = await dialog.showSaveDialog({
+    title: "Export Book ZIP",
+    buttonLabel: "Export ZIP",
+    defaultPath: suggestedPath,
+    filters: [{ name: "ZIP Archive", extensions: ["zip"] }]
+  });
+
+  if (saveResult.canceled || !saveResult.filePath) {
+    return {
+      cancelled: true,
+      outputPath: null,
+      includedRecordings: includeRecordings,
+      includedTranscriptions: includeTranscriptions,
+      fileCount: 0
+    };
+  }
+
+  const outputPath = saveResult.filePath.toLowerCase().endsWith(".zip")
+    ? saveResult.filePath
+    : `${saveResult.filePath}.zip`;
+
+  const stagingRoot = path.join(app.getPath("temp"), `fastchapter-export-${uuidv4()}`);
+  const archiveFolderName = sanitizeArchiveName(bookTitle);
+  const stagedBookRoot = path.join(stagingRoot, archiveFolderName);
+
+  try {
+    const files = await collectBookExportFiles(bookRoot, {
+      includeRecordings,
+      includeTranscriptions
+    });
+
+    if (files.length === 0) {
+      throw new Error("Nothing to export. The selected filters excluded all files.");
+    }
+
+    await ensureDir(stagedBookRoot);
+
+    for (const file of files) {
+      const destinationPath = resolveInside(stagedBookRoot, file.relativePath);
+      await ensureDir(path.dirname(destinationPath));
+      await fs.copyFile(file.absolutePath, destinationPath);
+    }
+
+    try {
+      await fs.rm(outputPath, { force: true });
+    } catch {
+      // Ignore removal failures if destination does not already exist.
+    }
+
+    await createZipArchive({
+      stagingRoot,
+      archiveFolderName,
+      outputPath
+    });
+
+    return {
+      cancelled: false,
+      outputPath,
+      includedRecordings: includeRecordings,
+      includedTranscriptions: includeTranscriptions,
+      fileCount: files.length
+    };
+  } finally {
+    await fs.rm(stagingRoot, { recursive: true, force: true }).catch(() => {
+      // Ignore cleanup failures.
+    });
+  }
+}
+
 function toPublicTranscriptionJob(job) {
   return {
     id: job.id,
@@ -1760,22 +2244,125 @@ async function checkCodexAvailability() {
   }
 }
 
+async function checkNpmAvailability() {
+  const checkedAt = new Date().toISOString();
+  const npmCheck = await checkCommandAvailability(getCommandCandidates("npm"), ["--version"], 12000);
+
+  return {
+    checkedAt,
+    installed: npmCheck.installed,
+    version: npmCheck.installed ? npmCheck.output.split("\n")[0] || null : null,
+    message: npmCheck.installed
+      ? `npm is installed (${npmCheck.output.split("\n")[0] || "version detected"}).`
+      : "npm is not installed or not available on PATH."
+  };
+}
+
+async function checkLatexAvailability() {
+  const checkedAt = new Date().toISOString();
+  const latexmkCheck = await checkCommandAvailability(getCommandCandidates("latexmk"), ["--version"], 12000);
+  const pdflatexCheck = await checkCommandAvailability(getCommandCandidates("pdflatex"), ["--version"], 12000);
+
+  const latexmkInstalled = latexmkCheck.installed;
+  const pdflatexInstalled = pdflatexCheck.installed;
+  const available = latexmkInstalled || pdflatexInstalled;
+  const preferredCompiler = latexmkInstalled ? "latexmk" : pdflatexInstalled ? "pdflatex" : null;
+
+  return {
+    checkedAt,
+    available,
+    preferredCompiler,
+    latexmkInstalled,
+    pdflatexInstalled,
+    message: available
+      ? `LaTeX toolchain detected (${preferredCompiler} preferred).`
+      : "No LaTeX compiler found. Install MiKTeX/TeX Live so `latexmk` or `pdflatex` is available on PATH."
+  };
+}
+
+async function getSetupStatus(username) {
+  const normalizedUsername = normalizeUserName(username);
+  const profile = await readUserProfilePrivate(normalizedUsername);
+  const hasSavedKey = Boolean(String(profile.integrations.openAIApiKey || "").trim());
+
+  const [codex, npm, latex] = await Promise.all([
+    checkCodexAvailability(),
+    checkNpmAvailability(),
+    checkLatexAvailability()
+  ]);
+
+  const openai = {
+    ok: hasSavedKey,
+    hasSavedKey,
+    message: hasSavedKey
+      ? "OpenAI key is saved locally."
+      : "OpenAI key is not saved. Add one to enable transcription and Codex API auth fallback."
+  };
+
+  const codexOk = codex.installed && (codex.authenticated || hasSavedKey);
+  const npmOk = npm.installed;
+  const latexOk = latex.available;
+
+  return {
+    checkedAt: new Date().toISOString(),
+    ready: codexOk && npmOk && latexOk,
+    checks: {
+      openai,
+      codex: {
+        ok: codexOk,
+        installed: codex.installed,
+        authenticated: codex.authenticated,
+        version: codex.version,
+        message: codex.installed
+          ? codex.authenticated || hasSavedKey
+            ? codex.message
+            : "Codex CLI is installed, but you must run `codex login` or save an OpenAI key."
+          : codex.message
+      },
+      npm: {
+        ok: npmOk,
+        installed: npm.installed,
+        version: npm.version,
+        message: npm.message
+      },
+      latex: {
+        ok: latexOk,
+        available: latex.available,
+        preferredCompiler: latex.preferredCompiler,
+        latexmkInstalled: latex.latexmkInstalled,
+        pdflatexInstalled: latex.pdflatexInstalled,
+        message: latex.message
+      }
+    }
+  };
+}
+
 function applyPromptVariables(template, variables) {
   return String(template || "").replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, (_full, key) =>
     Object.prototype.hasOwnProperty.call(variables, key) ? String(variables[key]) : ""
   );
 }
 
-async function loadCodexPromptTemplates() {
-  const readPrompt = async (fileName) =>
-    readTextOrEmpty(path.join(CODEX_PROMPTS_ROOT, fileName)).then((value) => value.trim());
+async function loadCodexPromptTemplates(usernameRaw) {
+  const defaults = await readDefaultPromptTemplates();
+  if (!usernameRaw) return defaults;
 
-  return {
-    bookContext: await readPrompt(CODEX_PROMPT_FILES.bookContext),
-    firstChapter: await readPrompt(CODEX_PROMPT_FILES.firstChapter),
-    nextChapter: await readPrompt(CODEX_PROMPT_FILES.nextChapter),
-    verifyMainTex: await readPrompt(CODEX_PROMPT_FILES.verifyMainTex)
-  };
+  const customizations = await readPromptCustomizationsPrivate(usernameRaw);
+  const resolved = { ...defaults };
+
+  Object.keys(CODEX_PROMPT_FILES).forEach((promptKey) => {
+    const activeTemplateId = String(customizations.activeTemplateIds[promptKey] || DEFAULT_PROMPT_TEMPLATE_ID);
+    if (activeTemplateId === DEFAULT_PROMPT_TEMPLATE_ID) return;
+
+    const selected = customizations.variants.find(
+      (variant) => variant.promptKey === promptKey && variant.id === activeTemplateId
+    );
+    if (selected) {
+      resolved[promptKey] = String(selected.content || "").trim();
+    }
+  });
+
+  return resolved;
 }
 
 function buildChapterPrompt({
@@ -2094,7 +2681,7 @@ async function runWriteBookSession(session) {
 
     const chapterOverview = formatChapterOverview(checklist.chapters);
     const initialOutlineOverview = formatInitialOutlineOverview(checklist);
-    const templates = await loadCodexPromptTemplates();
+    const templates = await loadCodexPromptTemplates(username);
 
     if (checklist.chapters.length === 0) {
       throw new Error("No chapters found. Create chapter folders first.");
@@ -2273,12 +2860,37 @@ function registerIpcHandlers() {
   ipcMain.handle("user:create", async (_event, username) => ensureUser(username));
   ipcMain.handle("user:listBooks", async (_event, username) => listBooks(normalizeUserName(username)));
   ipcMain.handle("user:getProfile", async (_event, username) => getUserProfile(normalizeUserName(username)));
+  ipcMain.handle("user:getSetupStatus", async (_event, payload) => {
+    const { username } = payload;
+    return getSetupStatus(username);
+  });
   ipcMain.handle("user:updateProfile", async (_event, payload) =>
     updateUserProfile({ ...payload, username: normalizeUserName(payload.username) })
   );
   ipcMain.handle("user:testOpenAIKey", async (_event, payload) =>
     testOpenAIApiKey({ ...payload, username: normalizeUserName(payload.username) })
   );
+  ipcMain.handle("user:listPromptTemplates", async (_event, payload) => {
+    const { username } = payload;
+    return listPromptTemplates(username);
+  });
+  ipcMain.handle("user:createPromptTemplateVariant", async (_event, payload) => {
+    return createPromptTemplateVariant({ ...payload, username: normalizeUserName(payload.username) });
+  });
+  ipcMain.handle("user:deletePromptTemplateVariant", async (_event, payload) => {
+    return deletePromptTemplateVariant({ ...payload, username: normalizeUserName(payload.username) });
+  });
+  ipcMain.handle("user:setActivePromptTemplate", async (_event, payload) => {
+    return setActivePromptTemplate({ ...payload, username: normalizeUserName(payload.username) });
+  });
+  ipcMain.handle("system:openExternalUrl", async (_event, payload) => {
+    const url = String(payload?.url || "").trim();
+    if (!/^https?:\/\//i.test(url)) {
+      throw new Error("Only http(s) URLs are allowed.");
+    }
+    await shell.openExternal(url);
+    return { ok: true };
+  });
 
   ipcMain.handle("book:create", async (_event, payload) => {
     const { username, title } = payload;
@@ -2345,6 +2957,15 @@ function registerIpcHandlers() {
       username: normalizeUserName(username),
       bookId,
       entryRelativePath
+    });
+  });
+  ipcMain.handle("book:exportBookArchive", async (_event, payload) => {
+    const { username, bookId, includeRecordings, includeTranscriptions } = payload;
+    return exportBookArchive({
+      username: normalizeUserName(username),
+      bookId,
+      includeRecordings,
+      includeTranscriptions
     });
   });
   ipcMain.handle("book:getWriteBookChecklist", async (_event, payload) => {

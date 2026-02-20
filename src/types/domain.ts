@@ -99,10 +99,67 @@ export type CodexAvailability = {
   checkedAt: string;
   installed: boolean;
   authenticated: boolean;
+  command?: string;
   version: string | null;
   helpPreview: string;
   loginStatus: string;
   message: string;
+};
+
+export type SetupStatus = {
+  checkedAt: string;
+  ready: boolean;
+  checks: {
+    openai: {
+      ok: boolean;
+      hasSavedKey: boolean;
+      message: string;
+    };
+    codex: {
+      ok: boolean;
+      installed: boolean;
+      authenticated: boolean;
+      version: string | null;
+      message: string;
+    };
+    npm: {
+      ok: boolean;
+      installed: boolean;
+      version: string | null;
+      message: string;
+    };
+    latex: {
+      ok: boolean;
+      available: boolean;
+      preferredCompiler: "latexmk" | "pdflatex" | null;
+      latexmkInstalled: boolean;
+      pdflatexInstalled: boolean;
+      message: string;
+    };
+  };
+};
+
+export type PromptTemplateSource = "default" | "custom";
+
+export type PromptTemplate = {
+  id: string;
+  name: string;
+  source: PromptTemplateSource;
+  content: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
+export type PromptTemplateGroup = {
+  promptKey: "bookContext" | "firstChapter" | "nextChapter" | "verifyMainTex";
+  label: string;
+  activeTemplateId: string;
+  templates: PromptTemplate[];
+};
+
+export type PromptTemplateLibrary = {
+  generatedAt: string;
+  prompts: PromptTemplateGroup[];
 };
 
 export type WriteBookSessionStart = {
@@ -130,6 +187,14 @@ export type WriteBookSessionSnapshot = {
   logs: WriteBookSessionLogLine[];
   nextLogIndex: number;
   hasMoreLogs: boolean;
+};
+
+export type ExportBookArchiveResult = {
+  cancelled: boolean;
+  outputPath: string | null;
+  includedRecordings: boolean;
+  includedTranscriptions: boolean;
+  fileCount: number;
 };
 
 export type LatexCompileResult = {

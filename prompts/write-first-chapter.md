@@ -16,6 +16,3 @@ Instructions:
 - Keep statements grounded in transcription evidence.
 - Preserve project structure and existing includes.
 - Write directly into `{{CHAPTER_FILE}}`.
-
-Output:
-- Return a short summary of edits and notable assumptions.
