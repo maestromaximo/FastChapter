@@ -11,6 +11,8 @@ contextBridge.exposeInMainWorld("fastChapter", {
   createPromptTemplateVariant: (payload) => ipcRenderer.invoke("user:createPromptTemplateVariant", payload),
   deletePromptTemplateVariant: (payload) => ipcRenderer.invoke("user:deletePromptTemplateVariant", payload),
   setActivePromptTemplate: (payload) => ipcRenderer.invoke("user:setActivePromptTemplate", payload),
+  getWorkingDirectory: () => ipcRenderer.invoke("system:getWorkingDirectory"),
+  chooseWorkingDirectory: () => ipcRenderer.invoke("system:chooseWorkingDirectory"),
   openExternalUrl: (payload) => ipcRenderer.invoke("system:openExternalUrl", payload),
 
   createBook: (payload) => ipcRenderer.invoke("book:create", payload),

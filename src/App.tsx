@@ -339,6 +339,7 @@ export default function App() {
 
   const [usernameInput, setUsernameInput] = useState("");
   const [activeUser, setActiveUser] = useState<string | null>(null);
+  const [workingDirectoryPath, setWorkingDirectoryPath] = useState<string>("");
   const [userRootPath, setUserRootPath] = useState<string>("");
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [openAiApiKeyInput, setOpenAiApiKeyInput] = useState("");
@@ -354,6 +355,7 @@ export default function App() {
   const [isDeletingPromptVariant, setIsDeletingPromptVariant] = useState(false);
   const [isSavingApiKey, setIsSavingApiKey] = useState(false);
   const [isTestingApiKey, setIsTestingApiKey] = useState(false);
+  const [isChoosingWorkingDirectory, setIsChoosingWorkingDirectory] = useState(false);
   const [apiKeyTestMessage, setApiKeyTestMessage] = useState<string | null>(null);
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
@@ -467,8 +469,15 @@ export default function App() {
     setBooks(result);
   };
 
+  const refreshWorkingDirectory = async () => {
+    const result = await window.fastChapter.getWorkingDirectory();
+    setWorkingDirectoryPath(result.path);
+    return result;
+  };
+
   const refreshProfile = async (username: string) => {
     const profile = await window.fastChapter.getUserProfile(username);
+    setUserRootPath(profile.rootPath);
     setUserProfile(profile);
     setApiKeyTestMessage(null);
     return profile;
@@ -564,12 +573,13 @@ export default function App() {
     let cancelled = false;
 
     Promise.all([
+      refreshWorkingDirectory(),
       refreshBooks(activeUser),
       refreshProfile(activeUser),
       refreshSetupStatus(activeUser, { silent: true }),
       refreshPromptLibrary(activeUser, { silent: true })
     ])
-      .then(([, , setup]) => {
+      .then(([, , , setup]) => {
         if (cancelled) return;
         setScreen(setup?.ready ? "bookshelf" : "setup");
       })
@@ -669,6 +679,12 @@ export default function App() {
     if (storedTheme === "dark" || storedTheme === "light") {
       setTheme(storedTheme);
     }
+  }, []);
+
+  useEffect(() => {
+    refreshWorkingDirectory().catch(() => {
+      // Keep auth/setup usable even if reading the path fails temporarily.
+    });
   }, []);
 
   useEffect(() => {
@@ -845,6 +861,53 @@ export default function App() {
       setNotice({ tone: "error", text: String(error) });
     } finally {
       setIsBusy(false);
+    }
+  };
+
+  const handleChooseWorkingDirectory = async () => {
+    try {
+      setIsChoosingWorkingDirectory(true);
+      const result = await window.fastChapter.chooseWorkingDirectory();
+      setWorkingDirectoryPath(result.path);
+
+      if (result.cancelled) {
+        return;
+      }
+
+      if (activeUser) {
+        const profile = await window.fastChapter.createUser(activeUser);
+        setUserRootPath(profile.rootPath);
+        setSelectedBook(null);
+        setTree([]);
+        setSelectedPath(null);
+        setSelectedExplorerPaths([]);
+        setExplorerSelectionAnchorPath(null);
+        setRecordingData({
+          recordings: [],
+          transcriptions: [],
+          jobs: []
+        });
+        setEditorContent("");
+        setLastSavedContent("");
+        setAudioPreviewDataUrl(null);
+
+        await Promise.all([
+          refreshBooks(activeUser),
+          refreshProfile(activeUser),
+          refreshSetupStatus(activeUser, { silent: true }),
+          refreshPromptLibrary(activeUser, { silent: true })
+        ]);
+
+        if (screen === "workspace") {
+          setScreen("bookshelf");
+        }
+      }
+
+      setNotice({ tone: "success", text: `Working directory updated: ${result.path}` });
+    } catch (error) {
+      setNotice({ tone: "error", text: String(error) });
+    } finally {
+      setIsChoosingWorkingDirectory(false);
     }
   };
 
@@ -2225,7 +2288,7 @@ export default function App() {
               Open My Bookshelf
             </Button>
             <p className="text-xs text-muted-foreground">
-              Books are stored locally under your app data folder. This prototype does not sync to cloud yet.
+              Books stay local in your configured working directory. You can change it anytime in Setup or Profile.
             </p>
           </CardContent>
         </Card>
@@ -2263,6 +2326,29 @@ export default function App() {
         </section>
 
         <section className="mx-auto mt-4 grid w-full max-w-[1300px] grid-cols-1 gap-4 lg:grid-cols-2">
+          <Card className="border-border/70 bg-card/65">
+            <CardHeader>
+              <CardTitle className="text-base">Working Directory</CardTitle>
+              <CardDescription>
+                Choose where Fast Chapter stores your local bookshelf, users, and project data.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <div className="space-y-1 rounded-md border border-border bg-muted/20 px-3 py-2">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Current path</p>
+                <p className="break-all font-mono text-xs text-foreground/90">{workingDirectoryPath || "Loading..."}</p>
+              </div>
+              <Button variant="outline" onClick={handleChooseWorkingDirectory} disabled={isChoosingWorkingDirectory}>
+                {isChoosingWorkingDirectory ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FolderOpen className="mr-2 h-4 w-4" />}
+                Choose Directory
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                If you pick a folder not named `FastChapterCWD`, Fast Chapter will create and use a `FastChapterCWD` folder inside it.
+                Existing data is not moved automatically.
+              </p>
+            </CardContent>
+          </Card>
+
           <Card className="border-border/70 bg-card/65">
             <CardHeader>
               <CardTitle className="text-base">OpenAI Key</CardTitle>
@@ -2734,7 +2820,7 @@ export default function App() {
           <Card className="border-border/70 bg-card/65">
             <CardHeader>
               <CardTitle className="text-base">Author Info</CardTitle>
-              <CardDescription>Stored locally in your app data folder.</CardDescription>
+              <CardDescription>Stored locally on this machine.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex items-center gap-3 rounded-md border border-border bg-muted/20 px-3 py-2">
@@ -2750,6 +2836,18 @@ export default function App() {
                 <p className="text-xs uppercase tracking-wide text-muted-foreground">Local storage path</p>
                 <p className="break-all font-mono text-xs text-foreground/90">{userRootPath || "Not loaded yet"}</p>
               </div>
+              <div className="space-y-1 rounded-md border border-border bg-muted/20 px-3 py-2">
+                <p className="text-xs uppercase tracking-wide text-muted-foreground">Working directory</p>
+                <p className="break-all font-mono text-xs text-foreground/90">{workingDirectoryPath || "Not loaded yet"}</p>
+              </div>
+              <Button variant="outline" onClick={handleChooseWorkingDirectory} disabled={isChoosingWorkingDirectory}>
+                {isChoosingWorkingDirectory ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FolderOpen className="mr-2 h-4 w-4" />}
+                Choose Working Directory
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                If the selected folder is not named `FastChapterCWD`, the app creates `FastChapterCWD` inside it.
+                Existing data is not moved automatically.
+              </p>
             </CardContent>
           </Card>
 

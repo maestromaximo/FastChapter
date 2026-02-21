@@ -14,6 +14,7 @@ export type BookSummary = {
 
 export type UserProfile = {
   username: string;
+  rootPath: string;
   displayName: string;
   createdAt: string;
   updatedAt: string;
@@ -21,6 +22,17 @@ export type UserProfile = {
     hasOpenAIApiKey: boolean;
     autoTranscribe: boolean;
   };
+};
+
+export type WorkingDirectoryInfo = {
+  path: string;
+  usersPath: string;
+};
+
+export type WorkingDirectorySelectionResult = {
+  cancelled: boolean;
+  path: string;
+  usersPath: string;
 };
 
 export type TranscriptionJob = {

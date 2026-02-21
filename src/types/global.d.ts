@@ -9,6 +9,8 @@ import type {
   SaveRecordingResult,
   SetupStatus,
   UserProfile,
+  WorkingDirectoryInfo,
+  WorkingDirectorySelectionResult,
   WriteBookChecklist,
   WriteBookSessionSnapshot,
   WriteBookSessionStart,
@@ -61,6 +63,8 @@ declare global {
         promptKey: "bookContext" | "firstChapter" | "nextChapter" | "verifyMainTex";
         templateId: string;
       }) => Promise<{ ok: true; promptKey: string; activeTemplateId: string }>;
+      getWorkingDirectory: () => Promise<WorkingDirectoryInfo>;
+      chooseWorkingDirectory: () => Promise<WorkingDirectorySelectionResult>;
       openExternalUrl: (payload: { url: string }) => Promise<{ ok: true }>;
 
       createBook: (payload: { username: string; title: string }) => Promise<BookSummary>;

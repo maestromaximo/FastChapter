@@ -7,6 +7,8 @@ const { v4: uuidv4 } = require("uuid");
 
 const USERS_DIR = "users";
 const BOOKS_DIR = "books";
+const APP_SETTINGS_FILE = "app-settings.json";
+const WORKING_DIRECTORY_NAME = "FastChapterCWD";
 const OPENAI_TRANSCRIPTION_MODEL = "gpt-4o-transcribe";
 const OPENAI_TRANSCRIPTION_UPLOAD_LIMIT_BYTES = 25 * 1024 * 1024;
 const LATEX_BUILD_DIR = ".fastchapter-build";
@@ -55,6 +57,7 @@ const transcriptionJobs = new Map();
 const latexCompileCache = new Map();
 const writeBookSessions = new Map();
 let latexCompilerPromise = null;
+let workingDirectoryRoot = "";
 
 function normalizeUserName(value) {
   const cleaned = String(value || "")
@@ -64,8 +67,32 @@ function normalizeUserName(value) {
   return cleaned.replace(/-+/g, "-").replace(/^-|-$/g, "");
 }
 
+function getDefaultWorkingDirectoryRoot() {
+  return app.getPath("userData");
+}
+
+function getWorkingDirectoryRoot() {
+  const configuredRoot = String(workingDirectoryRoot || "").trim();
+  return configuredRoot || getDefaultWorkingDirectoryRoot();
+}
+
+function getAppSettingsPath() {
+  return path.join(app.getPath("userData"), APP_SETTINGS_FILE);
+}
+
+function normalizeWorkingDirectorySelection(selectedPath) {
+  const absolutePath = path.resolve(String(selectedPath || "").trim());
+  const baseName = path.basename(absolutePath).toLowerCase();
+
+  if (baseName === WORKING_DIRECTORY_NAME.toLowerCase()) {
+    return absolutePath;
+  }
+
+  return path.join(absolutePath, WORKING_DIRECTORY_NAME);
+}
+
 function getUsersRoot() {
-  return path.join(app.getPath("userData"), USERS_DIR);
+  return path.join(getWorkingDirectoryRoot(), USERS_DIR);
 }
 
 function getUserRoot(username) {
@@ -82,6 +109,70 @@ function getBooksRoot(username) {
 
 function getBookRoot(username, bookId) {
   return path.join(getBooksRoot(username), bookId);
+}
+
+function getWorkingDirectoryInfo() {
+  return {
+    path: getWorkingDirectoryRoot(),
+    usersPath: getUsersRoot()
+  };
+}
+
+async function loadAppSettings() {
+  const settingsPath = getAppSettingsPath();
+
+  try {
+    const current = await readJson(settingsPath);
+    const nextRootRaw =
+      isObject(current) && typeof current.workingDirectoryRoot === "string"
+        ? current.workingDirectoryRoot.trim()
+        : "";
+    workingDirectoryRoot = nextRootRaw ? path.resolve(nextRootRaw) : getDefaultWorkingDirectoryRoot();
+  } catch {
+    workingDirectoryRoot = getDefaultWorkingDirectoryRoot();
+  }
+}
+
+async function saveAppSettings() {
+  const settingsPath = getAppSettingsPath();
+  await writeJson(settingsPath, {
+    workingDirectoryRoot: getWorkingDirectoryRoot()
+  });
+}
+
+async function initializeWorkingDirectory() {
+  await loadAppSettings();
+  await ensureDir(getWorkingDirectoryRoot());
+  await ensureDir(getUsersRoot());
+}
+
+async function chooseWorkingDirectory() {
+  const currentRoot = getWorkingDirectoryRoot();
+  const result = await dialog.showOpenDialog({
+    title: "Choose Fast Chapter Working Directory",
+    properties: ["openDirectory", "createDirectory"],
+    defaultPath: currentRoot
+  });
+
+  if (result.canceled || !result.filePaths?.length) {
+    return {
+      cancelled: true,
+      ...getWorkingDirectoryInfo()
+    };
+  }
+
+  const selectedPath = result.filePaths[0];
+  const nextRoot = normalizeWorkingDirectorySelection(selectedPath);
+
+  await ensureDir(nextRoot);
+  workingDirectoryRoot = nextRoot;
+  await ensureDir(getUsersRoot());
+  await saveAppSettings();
+
+  return {
+    cancelled: false,
+    ...getWorkingDirectoryInfo()
+  };
 }
 
 function resolveInside(root, candidateRelativePath) {
@@ -232,6 +323,7 @@ function normalizeProfile(username, profileRaw) {
 function sanitizeProfileForRenderer(profile) {
   return {
     username: profile.username,
+    rootPath: getUserRoot(profile.username),
     displayName: profile.displayName,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
@@ -2883,6 +2975,8 @@ function registerIpcHandlers() {
   ipcMain.handle("user:setActivePromptTemplate", async (_event, payload) => {
     return setActivePromptTemplate({ ...payload, username: normalizeUserName(payload.username) });
   });
+  ipcMain.handle("system:getWorkingDirectory", async () => getWorkingDirectoryInfo());
+  ipcMain.handle("system:chooseWorkingDirectory", async () => chooseWorkingDirectory());
   ipcMain.handle("system:openExternalUrl", async (_event, payload) => {
     const url = String(payload?.url || "").trim();
     if (!/^https?:\/\//i.test(url)) {
@@ -3040,7 +3134,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  await ensureDir(getUsersRoot());
+  await initializeWorkingDirectory();
   registerIpcHandlers();
   createWindow();
 
