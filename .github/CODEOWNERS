@@ -1,0 +1,11 @@
+# Default owners for all files
+* @maestromaximo
+
+# Electron process and preload
+/electron/ @maestromaximo
+
+# Renderer and UI
+/src/ @maestromaximo
+
+# Build/release automation
+/.github/ @maestromaximo
