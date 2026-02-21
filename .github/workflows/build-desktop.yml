@@ -51,7 +51,7 @@ jobs:
         run: npm run ${{ matrix.dist_script }}
 
       - name: Upload workflow artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: fastchapter-${{ matrix.artifact_label }}
           path: |
