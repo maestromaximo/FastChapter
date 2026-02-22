@@ -1,35 +1,46 @@
-# Fast Chapter
+<p align="center">
+  <img src="public/logo_no_background.svg" alt="Fast Chapter logo" width="120" />
+</p>
 
-Fast Chapter is an Electron desktop app for voice-first book drafting.
+<h1 align="center">Fast Chapter</h1>
 
-It is built around a local-first workflow:
-- local user profiles
-- local book/project files
-- chapter-by-chapter LaTeX authoring
-- recording and transcription pipelines
-- practical writing workspace UI
+<p align="center">
+  Voice-first desktop app for drafting books chapter by chapter.
+</p>
 
-## Features
+<p align="center">
+  <a href="https://github.com/maestromaximo/FastChapter/releases"><img alt="Release" src="https://img.shields.io/github/v/release/maestromaximo/FastChapter?display_name=tag"></a>
+  <a href="https://github.com/maestromaximo/FastChapter/actions/workflows/build-desktop.yml"><img alt="Build Desktop" src="https://img.shields.io/github/actions/workflow/status/maestromaximo/FastChapter/build-desktop.yml?label=desktop%20build"></a>
+  <a href="https://github.com/maestromaximo/FastChapter/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/maestromaximo/FastChapter/total"></a>
+  <a href="LICENSE"><img alt="License: AGPL-3.0" src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg"></a>
+  <img alt="Node" src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white">
+  <img alt="Electron" src="https://img.shields.io/badge/Electron-30+-47848F?logo=electron&logoColor=white">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white">
+</p>
 
-- Local account bootstrap and profile settings
+## Download
+
+- Latest desktop builds: [GitHub Releases](https://github.com/maestromaximo/FastChapter/releases)
+- CI artifacts (before release): [Build workflow runs](https://github.com/maestromaximo/FastChapter/actions/workflows/build-desktop.yml)
+
+## What Fast Chapter Is
+
+Fast Chapter is an Electron app for writers who want to draft by voice first and refine later. It is local-first by default and designed around practical book production workflows.
+
+### Core capabilities
+
+- Local user profiles and local project storage
 - Bookshelf + per-book workspace
-- Automatic LaTeX project scaffolding for new books
-- Explorer with create/rename/delete/move/upload actions
+- Automatic LaTeX scaffold for new books
+- Explorer actions: create, rename, move, delete, upload
 - Multi-select explorer actions (bulk move/delete)
-- Recording save flow with organized folder structure
-- Background transcription jobs (`gpt-4o-transcribe`)
-- Chapter writing workflow with Codex session support
-- Real LaTeX compilation and PDF preview (`main.tex`)
-- Export workflow for book archives
+- Recording save flow + organized folder structure
+- Background transcription jobs with `gpt-4o-transcribe`
+- Write-book workflow with Codex session support
+- LaTeX compile + in-app PDF preview (`main.tex`)
+- Export books as ZIP archives
 
-## Tech Stack
-
-- Electron (`electron/main.cjs`, `electron/preload.cjs`)
-- React 18 + Vite + TypeScript (`src/*`)
-- Tailwind CSS + shadcn-style component primitives (`src/components/ui/*`)
-- Node.js `>=20`
-
-## Getting Started
+## Quick Start (Developers)
 
 ### Prerequisites
 
@@ -43,7 +54,7 @@ It is built around a local-first workflow:
 npm install
 ```
 
-### Run (development)
+### Run in development
 
 ```bash
 npm run dev
@@ -56,12 +67,34 @@ npm run dev:ui
 npm run dev:electron
 ```
 
-### Build and run production app
+### Build and run production locally
 
 ```bash
 npm run build
 npm run start
 ```
+
+## Desktop Packaging
+
+```bash
+npm run dist
+npm run dist:win
+npm run dist:mac
+```
+
+Artifacts are written to `release/`.
+
+- Windows installer: `*-setup.exe`
+- Windows portable: `*-portable.exe`
+- macOS installer: `*.dmg`
+- macOS archive: `*.zip`
+
+## Project Structure
+
+- Electron main/preload: `electron/main.cjs`, `electron/preload.cjs`
+- Renderer: `src/*` (React 18 + Vite + TypeScript)
+- UI primitives: `src/components/ui/*`
+- Prompt templates: `prompts/*`
 
 ## Book Scaffold Rules
 
@@ -89,61 +122,29 @@ Recording/transcription files are organized under:
 
 ## OpenAI Transcription
 
-- API key is stored in the local user profile (never hardcoded)
+- API key is stored in local user profile (never hardcoded)
 - Endpoint: `POST /v1/audio/transcriptions`
 - Model: `gpt-4o-transcribe`
-- UI tracks job state (`queued`, `in_progress`, `completed`, `failed`)
+- UI tracks job state: `queued`, `in_progress`, `completed`, `failed`
 - Upload limit: 25 MB per file
 - Supported formats: `mp3`, `mp4`, `mpeg`, `mpga`, `m4a`, `wav`, `webm`
 
-## Desktop Distribution
+## CI and Releases
 
-```bash
-npm run dist
-npm run dist:win
-npm run dist:mac
-```
+- Workflow: `.github/workflows/build-desktop.yml`
+- Builds Windows and macOS artifacts
+- Uploads build artifacts to workflow runs
+- Publishes release assets on `v*` tags or manual dispatch
 
-Artifacts are written to `release/`.
+## Contributing
 
-- Windows installer: `*-setup.exe`
-- Windows portable: `*-portable.exe`
-- macOS installer: `*.dmg`
-- macOS archive: `*.zip`
-
-## GitHub Actions
-
-- `.github/workflows/build-desktop.yml`
-  - Builds Windows and macOS distributables
-  - Uploads artifacts to workflow runs
-  - Can publish release assets for version tags (`v*`) or manual dispatch
-
-## Contributing and Project Policies
-
-- Contributing guide: `CONTRIBUTING.md`
+- Guide: `CONTRIBUTING.md`
 - Security policy: `SECURITY.md`
 - Code of conduct: `CODE_OF_CONDUCT.md`
-- Contributors list: `CONTRIBUTORS.md`
-- Issue and PR templates: `.github/ISSUE_TEMPLATE/*`, `.github/PULL_REQUEST_TEMPLATE.md`
-- Repository ruleset template: `.github/rulesets/main.ruleset.json`
+- Contributors: `CONTRIBUTORS.md`
 
 ## License
 
-Licensed under the GNU Affero General Public License v3.0 (`AGPL-3.0`).
+Licensed under GNU Affero General Public License v3.0 (`AGPL-3.0`).
 
 - Full text: `LICENSE`
-
-## Prompt Templates
-
-Default prompt templates used by the write flow live in:
-
-- `prompts/book-context.md`
-- `prompts/write-first-chapter.md`
-- `prompts/write-next-chapter.md`
-- `prompts/verify-main-tex.md`
-
-## Security Notes
-
-- Never commit API keys or local profile data
-- Keep all file operations constrained to the project root
-- Review `SECURITY.md` for vulnerability reporting guidance
