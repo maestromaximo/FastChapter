@@ -2414,7 +2414,7 @@ export default function App() {
                     Open Install Page
                   </Button>
                 </div>
-              ) : !setupChecks?.codex.authenticated && !setupChecks?.openai.hasSavedKey ? (
+              ) : !setupChecks?.codex.authenticated ? (
                 <div className="space-y-2">
                   <p className="rounded-md border border-border bg-muted/20 px-2 py-1 font-mono text-[11px]">
                     codex login
@@ -3699,7 +3699,7 @@ export default function App() {
                 </Button>
                 <Button
                   onClick={() => setWriteBookStep("confirm")}
-                  disabled={!codexAvailability?.installed || isCheckingCodexAvailability}
+                  disabled={!codexAvailability?.installed || !codexAvailability?.authenticated || isCheckingCodexAvailability}
                 >
                   Next
                 </Button>

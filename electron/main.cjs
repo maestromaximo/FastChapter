@@ -750,6 +750,58 @@ function getCodexCommandCandidates() {
   return process.platform === "win32" ? ["codex", "codex.cmd"] : ["codex"];
 }
 
+function toAsarUnpackedPath(filePath) {
+  return String(filePath || "").replace(/([\\/])app\.asar([\\/])/g, "$1app.asar.unpacked$2");
+}
+
+function isAsarPath(filePath) {
+  return /[\\/]app\.asar[\\/]/.test(String(filePath || ""));
+}
+
+async function resolveBundledWindowsCodexBinary() {
+  if (process.platform !== "win32") return null;
+  if (process.arch !== "x64" && process.arch !== "arm64") return null;
+
+  const targetTriple =
+    process.arch === "arm64" ? "aarch64-pc-windows-msvc" : "x86_64-pc-windows-msvc";
+  const packageSegment = process.arch === "arm64" ? "codex-win32-arm64" : "codex-win32-x64";
+  const packageName = `@openai/${packageSegment}`;
+  const binaryRelativePath = path.join("vendor", targetTriple, "codex", "codex.exe");
+  const candidatePaths = [];
+
+  if (app.isPackaged) {
+    candidatePaths.push(
+      path.join(
+        process.resourcesPath,
+        "app.asar.unpacked",
+        "node_modules",
+        "@openai",
+        packageSegment,
+        binaryRelativePath
+      )
+    );
+  }
+
+  try {
+    const packageJsonPath = require.resolve(`${packageName}/package.json`);
+    const resolvedPath = path.join(path.dirname(packageJsonPath), binaryRelativePath);
+    candidatePaths.push(toAsarUnpackedPath(resolvedPath));
+    candidatePaths.push(resolvedPath);
+  } catch {
+    // Ignore package resolution errors and continue with known paths.
+  }
+
+  const uniqueCandidates = [...new Set(candidatePaths)];
+  for (const candidate of uniqueCandidates) {
+    if (!candidate || isAsarPath(candidate)) continue;
+    if (await fileExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 function getCommandCandidates(command) {
   if (process.platform !== "win32") return [command];
   return [command, `${command}.cmd`];
@@ -2388,10 +2440,10 @@ async function getSetupStatus(username) {
     hasSavedKey,
     message: hasSavedKey
       ? "OpenAI key is saved locally."
-      : "OpenAI key is not saved. Add one to enable transcription and Codex API auth fallback."
+      : "OpenAI key is not saved. Add one to enable transcription."
   };
 
-  const codexOk = codex.installed && (codex.authenticated || hasSavedKey);
+  const codexOk = codex.installed && codex.authenticated;
   const npmOk = npm.installed;
   const latexOk = latex.available;
 
@@ -2406,9 +2458,9 @@ async function getSetupStatus(username) {
         authenticated: codex.authenticated,
         version: codex.version,
         message: codex.installed
-          ? codex.authenticated || hasSavedKey
+          ? codex.authenticated
             ? codex.message
-            : "Codex CLI is installed, but you must run `codex login` or save an OpenAI key."
+            : "Codex CLI is installed, but Write Book requires `codex login`."
           : codex.message
       },
       npm: {
@@ -2739,27 +2791,35 @@ async function runWriteBookSession(session) {
     const codexCommand = String(codexStatus.command || "codex").trim() || "codex";
 
     const profile = await readUserProfilePrivate(username);
-    const apiKey = String(profile.integrations.openAIApiKey || "").trim();
-
-    if (apiKey) {
-      appendWriteBookLog(session, "info", "Using API key from local profile for Codex session.");
-    } else if (!codexStatus.authenticated) {
-      throw new Error("No saved API key and Codex login is not active. Run `codex login` before continuing.");
+    const hasSavedApiKey = Boolean(String(profile.integrations.openAIApiKey || "").trim());
+    if (hasSavedApiKey) {
+      appendWriteBookLog(
+        session,
+        "info",
+        "OpenAI API key remains available for transcription. Write Book uses Codex login credentials."
+      );
+    }
+    if (!codexStatus.authenticated) {
+      throw new Error("Codex login is not active. Run `codex login` before continuing.");
     }
 
     const { Codex } = await import("@openai/codex-sdk");
     const isWindowsCmdShim = process.platform === "win32" && /\.(cmd|bat)$/i.test(codexCommand);
-    const codexOptions = {
-      apiKey: apiKey || undefined
-    };
-    if (!isWindowsCmdShim) {
-      codexOptions.codexPathOverride = codexCommand;
+    const codexOptions = {};
+    if (isWindowsCmdShim) {
+      const bundledWindowsBinary = await resolveBundledWindowsCodexBinary();
+      if (bundledWindowsBinary) {
+        codexOptions.codexPathOverride = bundledWindowsBinary;
+        appendWriteBookLog(session, "info", `Using bundled Codex binary: ${bundledWindowsBinary}`);
+      } else {
+        appendWriteBookLog(
+          session,
+          "info",
+          `Detected Windows shell shim (${codexCommand}); using Codex SDK default command resolution for runtime.`
+        );
+      }
     } else {
-      appendWriteBookLog(
-        session,
-        "info",
-        `Detected Windows shell shim (${codexCommand}); using Codex SDK default command resolution for runtime.`
-      );
+      codexOptions.codexPathOverride = codexCommand;
     }
     const codex = new Codex(codexOptions);
 
