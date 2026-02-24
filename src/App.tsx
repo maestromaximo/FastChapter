@@ -19,6 +19,7 @@ import {
   Folder,
   FolderPlus,
   FolderOpen,
+  Github,
   KeyRound,
   LibraryBig,
   ListChecks,
@@ -2719,6 +2720,15 @@ export default function App() {
             <Button variant="outline" onClick={handleOpenPersonalization}>
               <FileText className="mr-2 h-4 w-4" />
               Personalization
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={() => handleOpenExternalUrl("https://github.com/maestromaximo/FastChapter")}
+              title="Open Fast Chapter on GitHub"
+              aria-label="Open Fast Chapter on GitHub"
+            >
+              <Github className="h-4 w-4" />
             </Button>
             <Button onClick={() => setIsCreateBookOpen(true)}>
               <Plus className="mr-2 h-4 w-4" />
